@@ -32,12 +32,13 @@
     // Given a array of URIs, load them in order
     function loadLanguages(uris, callback) {
       uris.forEach(function(uri) {
-	var sc=document.createElement('script');
-	sc.src=uri; sc.async=false; // critical?
-	if( uris.indexOf(uri) == uris.length-1) {
-	  sc.onload = callback;
-	}
-	document.head.appendChild(sc);
+        var sc = document.createElement('script');
+        sc.src = uri;
+        sc.async = false; // critical?
+        if (uris.indexOf(uri) == uris.length-1) {
+          sc.onload = callback;
+        }
+        document.head.appendChild(sc);
       });
     }
 
@@ -58,10 +59,10 @@
 	// Support a couple specific aliases
 	if(aliasmap[lang]) lang = aliasmap[lang];
 
-	lurl = hlbaseUri + "languages/" + lang + ".min.js";
-	if (!(langs.includes(lang) || jss.includes(lurl))) {
-	  jss.push(lurl);
-	}
+        lurl = hlbaseUri + "languages/" + lang + ".min.js";
+        if (!(langs.includes(lang) || jss.includes(lurl))) {
+          jss.push(lurl);
+        }
       }
       // Load files in order, highlight on last load
       loadLanguages(jss, () => {highlight(lb)});
