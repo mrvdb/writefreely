@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
 	"html/template"
 	"io/ioutil"
 	"net/http"
@@ -16,11 +15,15 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
 	"github.com/gorilla/sessions"
 	"github.com/manifoldco/promptui"
 	"github.com/writeas/go-strip-markdown"
+	"github.com/writeas/web-core/auth"
 	"github.com/writeas/web-core/converter"
 	"github.com/writeas/web-core/log"
 	"github.com/writeas/writefreely/config"
@@ -178,6 +181,7 @@ func Serve() {
 	doConfig := flag.Bool("config", false, "Run the configuration process")
 	genKeys := flag.Bool("gen-keys", false, "Generate encryption and authentication keys")
 	createSchema := flag.Bool("init-db", false, "Initialize app database")
+	createAdmin := flag.String("create-admin", "", "Create an admin with the given username:password")
 	resetPassUser := flag.String("reset-pass", "", "Reset the given user's password")
 	outputVersion := flag.Bool("v", false, "Output the current version")
 	flag.Parse()
@@ -244,19 +248,19 @@ func Serve() {
 
 		os.Exit(errStatus)
 	} else if *createSchema {
-		log.Info("Loading configuration...")
-		cfg, err := config.Load()
-		if err != nil {
-			log.Error("Unable to load configuration: %v", err)
-			os.Exit(1)
-		}
-		app.cfg = cfg
+		loadConfig(app)
 		connectToDatabase(app)
 		defer shutdown(app)
 
-		schema, err := ioutil.ReadFile("schema.sql")
+		schemaFileName := "schema.sql"
+
+		if app.cfg.Database.Type == "sqlite3" {
+			schemaFileName = "sqlite.sql"
+		}
+
+		schema, err := ioutil.ReadFile(schemaFileName)
 		if err != nil {
-			log.Error("Unable to load schema.sql: %v", err)
+			log.Error("Unable to load schema file: %v", err)
 			os.Exit(1)
 		}
 
@@ -281,15 +285,51 @@ func Serve() {
 			}
 		}
 		os.Exit(0)
-	} else if *resetPassUser != "" {
-		// Connect to the database
-		log.Info("Loading configuration...")
-		cfg, err := config.Load()
-		if err != nil {
-			log.Error("Unable to load configuration: %v", err)
+	} else if *createAdmin != "" {
+		// Create an admin user with --create-admin
+		creds := strings.Split(*createAdmin, ":")
+		if len(creds) != 2 {
+			log.Error("usage: writefreely --create-admin username:password")
 			os.Exit(1)
 		}
-		app.cfg = cfg
+
+		loadConfig(app)
+		connectToDatabase(app)
+		defer shutdown(app)
+
+		// Ensure an admin / first user doesn't already exist
+		if u, _ := app.db.GetUserByID(1); u != nil {
+			log.Error("Admin user already exists (%s). Aborting.", u.Username)
+			os.Exit(1)
+		}
+
+		// Create the user
+		username := creds[0]
+		password := creds[1]
+
+		hashedPass, err := auth.HashPass([]byte(password))
+		if err != nil {
+			log.Error("Unable to hash password: %v", err)
+			os.Exit(1)
+		}
+
+		u := &User{
+			Username:   username,
+			HashedPass: hashedPass,
+			Created:    time.Now().Truncate(time.Second).UTC(),
+		}
+
+		log.Info("Creating user %s...\n", u.Username)
+		err = app.db.CreateUser(u, "")
+		if err != nil {
+			log.Error("Unable to create user: %s", err)
+			os.Exit(1)
+		}
+		log.Info("Done!")
+		os.Exit(0)
+	} else if *resetPassUser != "" {
+		// Connect to the database
+		loadConfig(app)
 		connectToDatabase(app)
 		defer shutdown(app)
 
@@ -327,23 +367,17 @@ func Serve() {
 
 	log.Info("Initializing...")
 
-	log.Info("Loading configuration...")
-	cfg, err := config.Load()
-	if err != nil {
-		log.Error("Unable to load configuration: %v", err)
-		os.Exit(1)
-	}
-	app.cfg = cfg
+	loadConfig(app)
 
-	hostName = cfg.App.Host
-	isSingleUser = cfg.App.SingleUser
+	hostName = app.cfg.App.Host
+	isSingleUser = app.cfg.App.SingleUser
 	app.cfg.Server.Dev = *debugPtr
 
 	initTemplates()
 
 	// Load keys
 	log.Info("Loading encryption keys...")
-	err = initKeys(app)
+	err := initKeys(app)
 	if err != nil {
 		log.Error("\n%s\n", err)
 	}
@@ -433,20 +467,40 @@ func Serve() {
 	}
 }
 
-func connectToDatabase(app *app) {
-	if app.cfg.Database.Type != "mysql" {
-		log.Error("Invalid database type '%s'. Only 'mysql' is supported right now.", app.cfg.Database.Type)
+func loadConfig(app *app) {
+	log.Info("Loading configuration...")
+	cfg, err := config.Load()
+	if err != nil {
+		log.Error("Unable to load configuration: %v", err)
 		os.Exit(1)
 	}
+	app.cfg = cfg
+}
 
+func connectToDatabase(app *app) {
 	log.Info("Connecting to %s database...", app.cfg.Database.Type)
-	db, err := sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String())))
+
+	var db *sql.DB
+	var err error
+	if app.cfg.Database.Type == "mysql" {
+		db, err = sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String())))
+		db.SetMaxOpenConns(50)
+	} else if app.cfg.Database.Type == "sqlite3" {
+		if app.cfg.Database.FileName == "" {
+			log.Error("SQLite database filename value in config.ini is empty.")
+			os.Exit(1)
+		}
+		db, err = sql.Open("sqlite3", app.cfg.Database.FileName+"?parseTime=true&cached=shared")
+		db.SetMaxOpenConns(1)
+	} else {
+		log.Error("Invalid database type '%s'. Only 'mysql' and 'sqlite3' are supported right now.", app.cfg.Database.Type)
+		os.Exit(1)
+	}
 	if err != nil {
 		log.Error("%s", err)
 		os.Exit(1)
 	}
-	app.db = &datastore{db}
-	app.db.SetMaxOpenConns(50)
+	app.db = &datastore{db, app.cfg.Database.Type}
 }
 
 func shutdown(app *app) {
