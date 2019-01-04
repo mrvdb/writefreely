@@ -1,3 +1,13 @@
+/*
+ * Copyright © 2018 A Bunch Tell LLC.
+ *
+ * This file is part of WriteFreely.
+ *
+ * WriteFreely is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License, included
+ * in the LICENSE file in this source code package.
+ */
+
 package writefreely
 
 import (
@@ -5,7 +15,6 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,7 +25,6 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
@@ -26,6 +34,7 @@ import (
 	"github.com/writeas/web-core/auth"
 	"github.com/writeas/web-core/converter"
 	"github.com/writeas/web-core/log"
+	"github.com/writeas/writefreely/author"
 	"github.com/writeas/writefreely/config"
 	"github.com/writeas/writefreely/page"
 )
@@ -185,6 +194,7 @@ func Serve() {
 	genKeys := flag.Bool("gen-keys", false, "Generate encryption and authentication keys")
 	createSchema := flag.Bool("init-db", false, "Initialize app database")
 	createAdmin := flag.String("create-admin", "", "Create an admin with the given username:password")
+	createUser := flag.String("create-user", "", "Create a regular user with the given username:password")
 	resetPassUser := flag.String("reset-pass", "", "Reset the given user's password")
 	configFile := flag.String("c", "config.ini", "The configuration file to use")
 	outputVersion := flag.Bool("v", false, "Output the current version")
@@ -259,12 +269,11 @@ func Serve() {
 		defer shutdown(app)
 
 		schemaFileName := "schema.sql"
-
 		if app.cfg.Database.Type == "sqlite3" {
 			schemaFileName = "sqlite.sql"
 		}
 
-		schema, err := ioutil.ReadFile(schemaFileName)
+		schema, err := Asset(schemaFileName)
 		if err != nil {
 			log.Error("Unable to load schema file: %v", err)
 			os.Exit(1)
@@ -292,47 +301,9 @@ func Serve() {
 		}
 		os.Exit(0)
 	} else if *createAdmin != "" {
-		// Create an admin user with --create-admin
-		creds := strings.Split(*createAdmin, ":")
-		if len(creds) != 2 {
-			log.Error("usage: writefreely --create-admin username:password")
-			os.Exit(1)
-		}
-
-		loadConfig(app)
-		connectToDatabase(app)
-		defer shutdown(app)
-
-		// Ensure an admin / first user doesn't already exist
-		if u, _ := app.db.GetUserByID(1); u != nil {
-			log.Error("Admin user already exists (%s). Aborting.", u.Username)
-			os.Exit(1)
-		}
-
-		// Create the user
-		username := creds[0]
-		password := creds[1]
-
-		hashedPass, err := auth.HashPass([]byte(password))
-		if err != nil {
-			log.Error("Unable to hash password: %v", err)
-			os.Exit(1)
-		}
-
-		u := &User{
-			Username:   username,
-			HashedPass: hashedPass,
-			Created:    time.Now().Truncate(time.Second).UTC(),
-		}
-
-		log.Info("Creating user %s...\n", u.Username)
-		err = app.db.CreateUser(u, "")
-		if err != nil {
-			log.Error("Unable to create user: %s", err)
-			os.Exit(1)
-		}
-		log.Info("Done!")
-		os.Exit(0)
+		adminCreateUser(app, *createAdmin, true)
+	} else if *createUser != "" {
+		adminCreateUser(app, *createUser, false)
 	} else if *resetPassUser != "" {
 		// Connect to the database
 		loadConfig(app)
@@ -504,6 +475,10 @@ func connectToDatabase(app *app) {
 		db, err = sql.Open(app.cfg.Database.Type, fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=%s", app.cfg.Database.User, app.cfg.Database.Password, app.cfg.Database.Host, app.cfg.Database.Port, app.cfg.Database.Database, url.QueryEscape(time.Local.String())))
 		db.SetMaxOpenConns(50)
 	} else if app.cfg.Database.Type == "sqlite3" {
+		if !SQLiteEnabled {
+			log.Error("Invalid database type '%s'. Binary wasn't compiled with SQLite3 support.", app.cfg.Database.Type)
+			os.Exit(1)
+		}
 		if app.cfg.Database.FileName == "" {
 			log.Error("SQLite database filename value in config.ini is empty.")
 			os.Exit(1)
@@ -524,4 +499,77 @@ func connectToDatabase(app *app) {
 func shutdown(app *app) {
 	log.Info("Closing database connection...")
 	app.db.Close()
+}
+
+func adminCreateUser(app *app, credStr string, isAdmin bool) {
+	// Create an admin user with --create-admin
+	creds := strings.Split(credStr, ":")
+	if len(creds) != 2 {
+		log.Error("usage: writefreely --create-admin username:password")
+		os.Exit(1)
+	}
+
+	loadConfig(app)
+	connectToDatabase(app)
+	defer shutdown(app)
+
+	// Ensure an admin / first user doesn't already exist
+	firstUser, _ := app.db.GetUserByID(1)
+	if isAdmin {
+		// Abort if trying to create admin user, but one already exists
+		if firstUser != nil {
+			log.Error("Admin user already exists (%s). Create a regular user with: writefreely --create-user", firstUser.Username)
+			os.Exit(1)
+		}
+	} else {
+		// Abort if trying to create regular user, but no admin exists yet
+		if firstUser == nil {
+			log.Error("No admin user exists yet. Create an admin first with: writefreely --create-admin")
+			os.Exit(1)
+		}
+	}
+
+	// Create the user
+	username := creds[0]
+	password := creds[1]
+
+	// Normalize and validate username
+	desiredUsername := username
+	username = getSlug(username, "")
+
+	usernameDesc := username
+	if username != desiredUsername {
+		usernameDesc += " (originally: " + desiredUsername + ")"
+	}
+
+	if !author.IsValidUsername(app.cfg, username) {
+		log.Error("Username %s is invalid, reserved, or shorter than configured minimum length (%d characters).", usernameDesc, app.cfg.App.MinUsernameLen)
+		os.Exit(1)
+	}
+
+	// Hash the password
+	hashedPass, err := auth.HashPass([]byte(password))
+	if err != nil {
+		log.Error("Unable to hash password: %v", err)
+		os.Exit(1)
+	}
+
+	u := &User{
+		Username:   username,
+		HashedPass: hashedPass,
+		Created:    time.Now().Truncate(time.Second).UTC(),
+	}
+
+	userType := "user"
+	if isAdmin {
+		userType = "admin"
+	}
+	log.Info("Creating %s %s...", userType, usernameDesc)
+	err = app.db.CreateUser(u, desiredUsername)
+	if err != nil {
+		log.Error("Unable to create user: %s", err)
+		os.Exit(1)
+	}
+	log.Info("Done!")
+	os.Exit(0)
 }

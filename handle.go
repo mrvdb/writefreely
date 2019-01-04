@@ -1,3 +1,13 @@
+/*
+ * Copyright © 2018 A Bunch Tell LLC.
+ *
+ * This file is part of WriteFreely.
+ *
+ * WriteFreely is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License, included
+ * in the LICENSE file in this source code package.
+ */
+
 package writefreely
 
 import (
@@ -515,6 +525,7 @@ func (h *Handler) handleHTTPError(w http.ResponseWriter, r *http.Request, err er
 			sendRedirect(w, http.StatusFound, "/login?to="+r.URL.Path+q)
 			return
 		} else if err.Status == http.StatusGone {
+			w.WriteHeader(err.Status)
 			p := &struct {
 				page.StaticPage
 				Content *template.HTML
@@ -528,9 +539,11 @@ func (h *Handler) handleHTTPError(w http.ResponseWriter, r *http.Request, err er
 			h.errors.Gone.ExecuteTemplate(w, "base", p)
 			return
 		} else if err.Status == http.StatusNotFound {
+			w.WriteHeader(err.Status)
 			h.errors.NotFound.ExecuteTemplate(w, "base", pageForReq(h.app, r))
 			return
 		} else if err.Status == http.StatusInternalServerError {
+			w.WriteHeader(err.Status)
 			log.Info("handleHTTPErorr internal error render")
 			h.errors.InternalServerError.ExecuteTemplate(w, "base", pageForReq(h.app, r))
 			return

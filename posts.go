@@ -1,3 +1,13 @@
+/*
+ * Copyright © 2018 A Bunch Tell LLC.
+ *
+ * This file is part of WriteFreely.
+ *
+ * WriteFreely is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License, included
+ * in the LICENSE file in this source code package.
+ */
+
 package writefreely
 
 import (
@@ -686,6 +696,10 @@ func existingPost(app *app, w http.ResponseWriter, r *http.Request) error {
 			collPre = ""
 		}
 		redirect = collPre + "/" + pRes.Slug.String + "/edit/meta"
+	} else {
+		if app.cfg.App.SingleUser {
+			redirect = "/d" + redirect
+		}
 	}
 	w.Header().Set("Location", redirect)
 	w.WriteHeader(http.StatusFound)
@@ -1351,7 +1365,7 @@ func (rp *RawPost) Created8601() string {
 	return rp.Created.Format("2006-01-02T15:04:05Z")
 }
 
-var imageURLRegex = regexp.MustCompile(`(?i)^https?:\/\/[^ ]*\.(gif|png|jpg|jpeg)$`)
+var imageURLRegex = regexp.MustCompile(`(?i)^https?:\/\/[^ ]*\.(gif|png|jpg|jpeg|image)$`)
 
 func (p *Post) extractImages() {
 	matches := extract.ExtractUrls(p.Content)
