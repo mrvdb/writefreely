@@ -112,6 +112,10 @@ type writestore interface {
 
 	GetDynamicContent(id string) (string, *time.Time, error)
 	UpdateDynamicContent(id, content string) error
+	GetAllUsers(page uint) (*[]User, error)
+	GetAllUsersCount() int64
+	GetUserLastPostTime(id int64) (*time.Time, error)
+	GetCollectionLastPostTime(id int64) (*time.Time, error)
 }
 
 type datastore struct {
@@ -151,14 +155,14 @@ func (db *datastore) dateSub(l int, unit string) string {
 }
 
 func (db *datastore) CreateUser(u *User, collectionTitle string) error {
+	if db.PostIDExists(u.Username) {
+		return impart.HTTPError{http.StatusConflict, "Invalid collection name."}
+	}
+
 	// New users get a `users` and `collections` row.
 	t, err := db.Begin()
 	if err != nil {
 		return err
-	}
-
-	if db.PostIDExists(u.Username) {
-		return impart.HTTPError{http.StatusConflict, "Invalid collection name."}
 	}
 
 	// 1. Add to `users` table
@@ -1135,7 +1139,14 @@ func (db *datastore) GetPostsTagged(c *Collection, tag string, page int, include
 	if !includeFuture {
 		timeCondition = "AND created <= " + db.now()
 	}
-	rows, err := db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+strings.ToLower(tag)+"[[:>:]]")
+
+	var rows *sql.Rows
+	var err error
+	if db.driverName == driverSQLite {
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) regexp ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, `.*#`+strings.ToLower(tag)+`\b.*`)
+	} else {
+		rows, err = db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND LOWER(content) RLIKE ? "+timeCondition+" ORDER BY created "+order+limitStr, collID, "#"+strings.ToLower(tag)+"[[:>:]]")
+	}
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -1740,6 +1751,20 @@ func (db *datastore) GetUserPosts(u *User) (*[]PublicPost, error) {
 	return &posts, nil
 }
 
+func (db *datastore) GetUserPostsCount(userID int64) int64 {
+	var count int64
+	err := db.QueryRow("SELECT COUNT(*) FROM posts WHERE owner_id = ?", userID).Scan(&count)
+	switch {
+	case err == sql.ErrNoRows:
+		return 0
+	case err != nil:
+		log.Error("Failed selecting posts count for user %d: %v", userID, err)
+		return 0
+	}
+
+	return count
+}
+
 // ChangeSettings takes a User and applies the changes in the given
 // userSettings, MODIFYING THE USER with successful changes.
 func (db *datastore) ChangeSettings(app *app, u *User, s *userSettings) error {
@@ -2200,6 +2225,72 @@ func (db *datastore) UpdateDynamicContent(id, content string) error {
 		log.Error("Unable to INSERT appcontent for '%s': %v", id, err)
 	}
 	return err
+}
+
+func (db *datastore) GetAllUsers(page uint) (*[]User, error) {
+	limitStr := fmt.Sprintf("0, %d", adminUsersPerPage)
+	if page > 1 {
+		limitStr = fmt.Sprintf("%d, %d", (page-1)*adminUsersPerPage, adminUsersPerPage)
+	}
+
+	rows, err := db.Query("SELECT id, username, created FROM users ORDER BY created DESC LIMIT " + limitStr)
+	if err != nil {
+		log.Error("Failed selecting from posts: %v", err)
+		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve user posts."}
+	}
+	defer rows.Close()
+
+	users := []User{}
+	for rows.Next() {
+		u := User{}
+		err = rows.Scan(&u.ID, &u.Username, &u.Created)
+		if err != nil {
+			log.Error("Failed scanning GetAllUsers() row: %v", err)
+			break
+		}
+		users = append(users, u)
+	}
+	return &users, nil
+}
+
+func (db *datastore) GetAllUsersCount() int64 {
+	var count int64
+	err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	switch {
+	case err == sql.ErrNoRows:
+		return 0
+	case err != nil:
+		log.Error("Failed selecting all users count: %v", err)
+		return 0
+	}
+
+	return count
+}
+
+func (db *datastore) GetUserLastPostTime(id int64) (*time.Time, error) {
+	var t time.Time
+	err := db.QueryRow("SELECT created FROM posts WHERE owner_id = ? ORDER BY created DESC LIMIT 1", id).Scan(&t)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil, nil
+	case err != nil:
+		log.Error("Failed selecting last post time from posts: %v", err)
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (db *datastore) GetCollectionLastPostTime(id int64) (*time.Time, error) {
+	var t time.Time
+	err := db.QueryRow("SELECT created FROM posts WHERE collection_id = ? ORDER BY created DESC LIMIT 1", id).Scan(&t)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil, nil
+	case err != nil:
+		log.Error("Failed selecting last post time from posts: %v", err)
+		return nil, err
+	}
+	return &t, nil
 }
 
 func stringLogln(log *string, s string, v ...interface{}) {
