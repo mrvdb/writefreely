@@ -7,6 +7,7 @@ RUN npm install -g less-plugin-clean-css
 WORKDIR /go/src/app
 COPY . .
 
+RUN make assets
 RUN make install
 RUN make ui
 RUN make deps
@@ -15,7 +16,6 @@ RUN mkdir /stage && \
     cp -R /go/bin \
        /go/src/app/templates \
        /go/src/app/static \
-       /go/src/app/schema.sql \
        /go/src/app/pages \
        /go/src/app/keys \
       /stage
