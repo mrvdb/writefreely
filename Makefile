@@ -15,6 +15,9 @@ all : build
 build: assets deps
 	cd cmd/writefreely; $(GOBUILD) -v -tags='sqlite'
 
+build-no-sqlite: assets-no-sqlite deps-no-sqlite
+	cd cmd/writefreely; $(GOBUILD) -v -o $(BINARY_NAME)
+
 build-linux: deps
 	@hash xgo > /dev/null 2>&1; if [ $$? -ne 0 ]; then \
 		$(GOGET) -u github.com/karalabe/xgo; \
@@ -46,6 +49,9 @@ run: dev-assets
 deps :
 	$(GOGET) -tags='sqlite' -v ./...
 
+deps-no-sqlite:
+	$(GOGET) -v ./...
+
 install : build
 	cmd/writefreely/$(BINARY_NAME) --gen-keys
 	cd less/; $(MAKE) install $(MFLAGS)
@@ -70,6 +76,17 @@ release : clean ui assets
 	$(MAKE) build-docker
 	$(MAKE) release-docker
 
+# This assumes you're on linux/amd64
+release-linux : clean ui
+	mkdir build
+	cp -r templates build
+	cp -r pages build
+	cp -r static build
+	mkdir build/keys
+	$(MAKE) build-no-sqlite
+	mv cmd/writefreely/$(BINARY_NAME) build/$(BINARY_NAME)
+	cd build; tar -cvzf ../$(BINARY_NAME)_$(GITREV)_linux_amd64.tar.gz *
+
 release-docker :
 	$(DOCKERCMD) push $(IMAGE_NAME)
 	
@@ -78,6 +95,9 @@ ui : force_look
 
 assets : generate
 	go-bindata -pkg writefreely -ignore=\\.gitignore schema.sql sqlite.sql
+
+assets-no-sqlite: generate
+	go-bindata -pkg writefreely -ignore=\\.gitignore schema.sql
 
 dev-assets : generate
 	go-bindata -pkg writefreely -ignore=\\.gitignore -debug schema.sql sqlite.sql

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -36,11 +37,12 @@ import (
 	"github.com/writeas/web-core/log"
 	"github.com/writeas/writefreely/author"
 	"github.com/writeas/writefreely/config"
+	"github.com/writeas/writefreely/migrations"
 	"github.com/writeas/writefreely/page"
 )
 
 const (
-	staticDir       = "static/"
+	staticDir       = "static"
 	assumedTitleLen = 80
 	postsPerPage    = 10
 
@@ -52,7 +54,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.7.0"
+	softwareVer = "0.7.1"
 
 	// DEPRECATED VARS
 	// TODO: pass app.cfg into GetCollection* calls so we can get these values
@@ -193,6 +195,7 @@ func Serve() {
 	doConfig := flag.Bool("config", false, "Run the configuration process")
 	genKeys := flag.Bool("gen-keys", false, "Generate encryption and authentication keys")
 	createSchema := flag.Bool("init-db", false, "Initialize app database")
+	migrate := flag.Bool("migrate", false, "Migrate the database")
 	createAdmin := flag.String("create-admin", "", "Create an admin with the given username:password")
 	createUser := flag.String("create-user", "", "Create a regular user with the given username:password")
 	resetPassUser := flag.String("reset-pass", "", "Reset the given user's password")
@@ -230,6 +233,10 @@ func Serve() {
 			connectToDatabase(app)
 			defer shutdown(app)
 
+			if !app.db.DatabaseInitialized() {
+				adminInitDatabase(app)
+			}
+
 			u := &User{
 				Username:   d.User.Username,
 				HashedPass: d.User.HashedPass,
@@ -249,6 +256,21 @@ func Serve() {
 	} else if *genKeys {
 		errStatus := 0
 
+		// Read keys path from config
+		loadConfig(app)
+
+		// Create keys dir if it doesn't exist yet
+		fullKeysDir := filepath.Join(app.cfg.Server.KeysParentDir, keysDir)
+		if _, err := os.Stat(fullKeysDir); os.IsNotExist(err) {
+			err = os.Mkdir(fullKeysDir, 0700)
+			if err != nil {
+				log.Error("%s", err)
+				os.Exit(1)
+			}
+		}
+
+		// Generate keys
+		initKeyPaths(app)
 		err := generateKey(emailKeyPath)
 		if err != nil {
 			errStatus = 1
@@ -267,39 +289,7 @@ func Serve() {
 		loadConfig(app)
 		connectToDatabase(app)
 		defer shutdown(app)
-
-		schemaFileName := "schema.sql"
-		if app.cfg.Database.Type == driverSQLite {
-			schemaFileName = "sqlite.sql"
-		}
-
-		schema, err := Asset(schemaFileName)
-		if err != nil {
-			log.Error("Unable to load schema file: %v", err)
-			os.Exit(1)
-		}
-
-		tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")
-
-		queries := strings.Split(string(schema), ";\n")
-		for _, q := range queries {
-			if strings.TrimSpace(q) == "" {
-				continue
-			}
-			parts := tblReg.FindStringSubmatch(q)
-			if len(parts) >= 3 {
-				log.Info("Creating table %s...", parts[2])
-			} else {
-				log.Info("Creating table ??? (Weird query) No match in: %v", parts)
-			}
-			_, err = app.db.Exec(q)
-			if err != nil {
-				log.Error("%s", err)
-			} else {
-				log.Info("Created.")
-			}
-		}
-		os.Exit(0)
+		adminInitDatabase(app)
 	} else if *createAdmin != "" {
 		adminCreateUser(app, *createAdmin, true)
 	} else if *createUser != "" {
@@ -340,6 +330,18 @@ func Serve() {
 		}
 		log.Info("Success.")
 		os.Exit(0)
+	} else if *migrate {
+		loadConfig(app)
+		connectToDatabase(app)
+		defer shutdown(app)
+
+		err := migrations.Migrate(migrations.NewDatastore(app.db.DB, app.db.driverName))
+		if err != nil {
+			log.Error("migrate: %s", err)
+			os.Exit(1)
+		}
+
+		os.Exit(0)
 	}
 
 	log.Info("Initializing...")
@@ -350,11 +352,16 @@ func Serve() {
 	isSingleUser = app.cfg.App.SingleUser
 	app.cfg.Server.Dev = *debugPtr
 
-	initTemplates()
+	err := initTemplates(app.cfg)
+	if err != nil {
+		log.Error("load templates: %s", err)
+		os.Exit(1)
+	}
 
 	// Load keys
 	log.Info("Loading encryption keys...")
-	err := initKeys(app)
+	initKeyPaths(app)
+	err = initKeys(app)
 	if err != nil {
 		log.Error("\n%s\n", err)
 	}
@@ -409,7 +416,7 @@ func Serve() {
 	}
 
 	// Handle static files
-	fs := http.FileServer(http.Dir(staticDir))
+	fs := http.FileServer(http.Dir(filepath.Join(app.cfg.Server.StaticParentDir, staticDir)))
 	shttp.Handle("/", fs)
 	r.PathPrefix("/").Handler(fs)
 
@@ -571,5 +578,40 @@ func adminCreateUser(app *app, credStr string, isAdmin bool) {
 		os.Exit(1)
 	}
 	log.Info("Done!")
+	os.Exit(0)
+}
+
+func adminInitDatabase(app *app) {
+	schemaFileName := "schema.sql"
+	if app.cfg.Database.Type == driverSQLite {
+		schemaFileName = "sqlite.sql"
+	}
+
+	schema, err := Asset(schemaFileName)
+	if err != nil {
+		log.Error("Unable to load schema file: %v", err)
+		os.Exit(1)
+	}
+
+	tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")
+
+	queries := strings.Split(string(schema), ";\n")
+	for _, q := range queries {
+		if strings.TrimSpace(q) == "" {
+			continue
+		}
+		parts := tblReg.FindStringSubmatch(q)
+		if len(parts) >= 3 {
+			log.Info("Creating table %s...", parts[2])
+		} else {
+			log.Info("Creating table ??? (Weird query) No match in: %v", parts)
+		}
+		_, err = app.db.Exec(q)
+		if err != nil {
+			log.Error("%s", err)
+		} else {
+			log.Info("Created.")
+		}
+	}
 	os.Exit(0)
 }
