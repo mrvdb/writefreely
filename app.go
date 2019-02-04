@@ -54,7 +54,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.8.0"
+	softwareVer = "0.8.1"
 
 	// DEPRECATED VARS
 	// TODO: pass app.cfg into GetCollection* calls so we can get these values
@@ -142,7 +142,7 @@ func handleTemplatedPage(app *app, w http.ResponseWriter, r *http.Request, t *te
 		if err != nil {
 			return err
 		}
-		p.Content = template.HTML(applyMarkdown([]byte(c)))
+		p.Content = template.HTML(applyMarkdown([]byte(c), ""))
 		p.PlainContent = shortPostDescription(stripmd.Strip(c))
 		if updated != nil {
 			p.Updated = updated.Format("January 2, 2006")
@@ -190,16 +190,21 @@ var shttp = http.NewServeMux()
 var fileRegex = regexp.MustCompile("/([^/]*\\.[^/]*)$")
 
 func Serve() {
+	// General options usable with other commands
 	debugPtr := flag.Bool("debug", false, "Enables debug logging.")
+	configFile := flag.String("c", "config.ini", "The configuration file to use")
+
+	// Setup actions
 	createConfig := flag.Bool("create-config", false, "Creates a basic configuration and exits")
 	doConfig := flag.Bool("config", false, "Run the configuration process")
 	genKeys := flag.Bool("gen-keys", false, "Generate encryption and authentication keys")
 	createSchema := flag.Bool("init-db", false, "Initialize app database")
 	migrate := flag.Bool("migrate", false, "Migrate the database")
+
+	// Admin actions
 	createAdmin := flag.String("create-admin", "", "Create an admin with the given username:password")
 	createUser := flag.String("create-user", "", "Create a regular user with the given username:password")
 	resetPassUser := flag.String("reset-pass", "", "Reset the given user's password")
-	configFile := flag.String("c", "config.ini", "The configuration file to use")
 	outputVersion := flag.Bool("v", false, "Output the current version")
 	flag.Parse()
 
@@ -234,7 +239,11 @@ func Serve() {
 			defer shutdown(app)
 
 			if !app.db.DatabaseInitialized() {
-				adminInitDatabase(app)
+				err = adminInitDatabase(app)
+				if err != nil {
+					log.Error(err.Error())
+					os.Exit(1)
+				}
 			}
 
 			u := &User{
@@ -289,11 +298,26 @@ func Serve() {
 		loadConfig(app)
 		connectToDatabase(app)
 		defer shutdown(app)
-		adminInitDatabase(app)
+		err := adminInitDatabase(app)
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
 	} else if *createAdmin != "" {
-		adminCreateUser(app, *createAdmin, true)
+		err := adminCreateUser(app, *createAdmin, true)
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
 	} else if *createUser != "" {
-		adminCreateUser(app, *createUser, false)
+		err := adminCreateUser(app, *createUser, false)
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
 	} else if *resetPassUser != "" {
 		// Connect to the database
 		loadConfig(app)
@@ -508,12 +532,15 @@ func shutdown(app *app) {
 	app.db.Close()
 }
 
-func adminCreateUser(app *app, credStr string, isAdmin bool) {
+func adminCreateUser(app *app, credStr string, isAdmin bool) error {
 	// Create an admin user with --create-admin
 	creds := strings.Split(credStr, ":")
 	if len(creds) != 2 {
-		log.Error("usage: writefreely --create-admin username:password")
-		os.Exit(1)
+		c := "user"
+		if isAdmin {
+			c = "admin"
+		}
+		return fmt.Errorf("usage: writefreely --create-%s username:password", c)
 	}
 
 	loadConfig(app)
@@ -525,14 +552,12 @@ func adminCreateUser(app *app, credStr string, isAdmin bool) {
 	if isAdmin {
 		// Abort if trying to create admin user, but one already exists
 		if firstUser != nil {
-			log.Error("Admin user already exists (%s). Create a regular user with: writefreely --create-user", firstUser.Username)
-			os.Exit(1)
+			return fmt.Errorf("Admin user already exists (%s). Create a regular user with: writefreely --create-user", firstUser.Username)
 		}
 	} else {
 		// Abort if trying to create regular user, but no admin exists yet
 		if firstUser == nil {
-			log.Error("No admin user exists yet. Create an admin first with: writefreely --create-admin")
-			os.Exit(1)
+			return fmt.Errorf("No admin user exists yet. Create an admin first with: writefreely --create-admin")
 		}
 	}
 
@@ -550,15 +575,13 @@ func adminCreateUser(app *app, credStr string, isAdmin bool) {
 	}
 
 	if !author.IsValidUsername(app.cfg, username) {
-		log.Error("Username %s is invalid, reserved, or shorter than configured minimum length (%d characters).", usernameDesc, app.cfg.App.MinUsernameLen)
-		os.Exit(1)
+		return fmt.Errorf("Username %s is invalid, reserved, or shorter than configured minimum length (%d characters).", usernameDesc, app.cfg.App.MinUsernameLen)
 	}
 
 	// Hash the password
 	hashedPass, err := auth.HashPass([]byte(password))
 	if err != nil {
-		log.Error("Unable to hash password: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("Unable to hash password: %v", err)
 	}
 
 	u := &User{
@@ -574,14 +597,13 @@ func adminCreateUser(app *app, credStr string, isAdmin bool) {
 	log.Info("Creating %s %s...", userType, usernameDesc)
 	err = app.db.CreateUser(u, desiredUsername)
 	if err != nil {
-		log.Error("Unable to create user: %s", err)
-		os.Exit(1)
+		return fmt.Errorf("Unable to create user: %s", err)
 	}
 	log.Info("Done!")
-	os.Exit(0)
+	return nil
 }
 
-func adminInitDatabase(app *app) {
+func adminInitDatabase(app *app) error {
 	schemaFileName := "schema.sql"
 	if app.cfg.Database.Type == driverSQLite {
 		schemaFileName = "sqlite.sql"
@@ -589,8 +611,7 @@ func adminInitDatabase(app *app) {
 
 	schema, err := Asset(schemaFileName)
 	if err != nil {
-		log.Error("Unable to load schema file: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("Unable to load schema file: %v", err)
 	}
 
 	tblReg := regexp.MustCompile("CREATE TABLE (IF NOT EXISTS )?`([a-z_]+)`")
@@ -618,10 +639,9 @@ func adminInitDatabase(app *app) {
 	log.Info("Updating appmigrations table...")
 	err = migrations.SetInitialMigrations(migrations.NewDatastore(app.db.DB, app.db.driverName))
 	if err != nil {
-		log.Error("Unable to set initial migrations: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("Unable to set initial migrations: %v", err)
 	}
-	log.Info("Done.")
 
-	os.Exit(0)
+	log.Info("Done.")
+	return nil
 }

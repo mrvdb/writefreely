@@ -32,7 +32,9 @@ It's designed to be flexible and share your writing widely, so it's built around
 * Start a blog for yourself, or host a community of writers
 * Form larger federated networks, and interact over modern protocols like ActivityPub
 * Write on a fast, dead-simple, and distraction-free editor
-* Format text with Markdown, and organize posts with hashtags
+* [Format text](https://howto.write.as/getting-started) with Markdown
+* [Organize posts](https://howto.write.as/organization) with hashtags
+* Create [static pages](https://howto.write.as/creating-a-static-page)
 * Publish drafts and let others proofread them by sharing a private link
 * Create multiple lightweight blogs under a single account
 * Export all data in plain text files
@@ -46,7 +48,7 @@ We offer two kinds of hosting services that make WriteFreely deployment painless
 
 ### [![Write.as](https://write.as/img/writeas-wf-readme.png)](https://write.as/)
 
-Start a personal blog on [Write.as](https://write.as), our flagship instance. Built to eliminate setup friction and preserve your privacy, Write.as helps you start a blog in seconds. It supports custom domains (with SSL) and multiple blogs / pen names per account. [Read more here](https://write.as/privacy).
+Start a personal blog on [Write.as](https://write.as), our flagship instance. Built to eliminate setup friction and preserve your privacy, Write.as helps you start a blog in seconds. It supports custom domains (with SSL) and multiple blogs / pen names per account. [Read more here](https://write.as/pricing).
 
 ### [![WriteFreely.host](https://writefreely.host/img/wfhost-wf-readme.png)](https://writefreely.host)
 
@@ -102,7 +104,7 @@ Ready to hack on your site? Here's a quick overview.
 ### Setting up
 
 ```bash
-go get github.com/writeas/writefreely/cmd/writefreely
+go get -d github.com/writeas/writefreely/cmd/writefreely
 ```
 
 Configure your site, create your database, and import the schema [as shown above](#quick-start). Then generate the remaining files you'll need:
@@ -148,7 +150,7 @@ working on it, though!
 
 ## Contributing
 
-We gladly welcome contributions to WriteFreely, whether in the form of [code](https://github.com/writeas/writefreely/blob/master/CONTRIBUTING.md#contributing-to-writefreely), [bug reports](https://github.com/writeas/writefreely/issues/new?template=bug_report.md), [feature requests](https://discuss.write.as/c/feedback/feature-requests), [translations](https://poeditor.com/join/project/TIZ6HFRFdE), or documentation improvements.
+We gladly welcome contributions to WriteFreely, whether in the form of [code](https://github.com/writeas/writefreely/blob/master/CONTRIBUTING.md#contributing-to-writefreely), [bug reports](https://github.com/writeas/writefreely/issues/new?template=bug_report.md), [feature requests](https://discuss.write.as/c/feedback/feature-requests), [translations](https://poeditor.com/join/project/TIZ6HFRFdE), or [documentation](https://github.com/writefreely/documentation) improvements.
 
 Before contributing anything, please read our [Contributing Guide](https://github.com/writeas/writefreely/blob/master/CONTRIBUTING.md#contributing-to-writefreely). It describes the correct channels for submitting contributions and any potential requirements.
 
