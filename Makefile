@@ -9,8 +9,12 @@ GOGET=$(GOCMD) get
 BINARY_NAME=writefreely
 DOCKERCMD=docker
 IMAGE_NAME=writeas/writefreely
+TMPBIN=./tmp
 
 all : build
+
+ci: ci-assets deps
+	cd cmd/writefreely; $(GOBUILD) -v
 
 build: assets deps
 	cd cmd/writefreely; $(GOBUILD) -v -tags='sqlite'
@@ -47,10 +51,10 @@ run: dev-assets
 	$(BINARY_NAME) --debug
 
 deps :
-	$(GOGET) -tags='sqlite' -v ./...
+	$(GOGET) -tags='sqlite' -d -v ./...
 
 deps-no-sqlite:
-	$(GOGET) -v ./...
+	$(GOGET) -d -v ./...
 
 install : build
 	cmd/writefreely/$(BINARY_NAME) --gen-keys
@@ -107,8 +111,21 @@ generate :
 		$(GOGET) -u github.com/jteeuwen/go-bindata/...; \
 	fi
 
+$(TMPBIN):
+	mkdir -p $(TMPBIN)
+
+$(TMPBIN)/go-bindata: deps $(TMPBIN)
+	$(GOBUILD) -o $(TMPBIN)/go-bindata github.com/jteeuwen/go-bindata/go-bindata
+
+$(TMPBIN)/xgo: deps $(TMPBIN)
+	$(GOBUILD) -o $(TMPBIN)/xgo github.com/karalabe/xgo
+
+ci-assets : $(TMPBIN)/go-bindata
+	$(TMPBIN)/go-bindata -pkg writefreely -ignore=\\.gitignore schema.sql sqlite.sql
+
 clean :
 	-rm -rf build
+	-rm -rf tmp
 	cd less/; $(MAKE) clean $(MFLAGS)
 
 force_look : 
