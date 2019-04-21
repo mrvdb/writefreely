@@ -54,7 +54,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.8.1"
+	softwareVer = "0.9.0"
 
 	// DEPRECATED VARS
 	// TODO: pass app.cfg into GetCollection* calls so we can get these values
@@ -115,6 +115,7 @@ func handleViewHome(app *app, w http.ResponseWriter, r *http.Request) error {
 func handleTemplatedPage(app *app, w http.ResponseWriter, r *http.Request, t *template.Template) error {
 	p := struct {
 		page.StaticPage
+		ContentTitle string
 		Content      template.HTML
 		PlainContent string
 		Updated      string
@@ -124,8 +125,7 @@ func handleTemplatedPage(app *app, w http.ResponseWriter, r *http.Request, t *te
 		StaticPage: pageForReq(app, r),
 	}
 	if r.URL.Path == "/about" || r.URL.Path == "/privacy" {
-		var c string
-		var updated *time.Time
+		var c *instanceContent
 		var err error
 
 		if r.URL.Path == "/about" {
@@ -136,16 +136,17 @@ func handleTemplatedPage(app *app, w http.ResponseWriter, r *http.Request, t *te
 			p.AboutStats.NumPosts, _ = app.db.GetTotalPosts()
 			p.AboutStats.NumBlogs, _ = app.db.GetTotalCollections()
 		} else {
-			c, updated, err = getPrivacyPage(app)
+			c, err = getPrivacyPage(app)
 		}
 
 		if err != nil {
 			return err
 		}
-		p.Content = template.HTML(applyMarkdown([]byte(c), ""))
-		p.PlainContent = shortPostDescription(stripmd.Strip(c))
-		if updated != nil {
-			p.Updated = updated.Format("January 2, 2006")
+		p.ContentTitle = c.Title.String
+		p.Content = template.HTML(applyMarkdown([]byte(c.Content), ""))
+		p.PlainContent = shortPostDescription(stripmd.Strip(c.Content))
+		if !c.Updated.IsZero() {
+			p.Updated = c.Updated.Format("January 2, 2006")
 		}
 	}
 
@@ -636,10 +637,16 @@ func adminInitDatabase(app *app) error {
 	}
 
 	// Set up migrations table
-	log.Info("Updating appmigrations table...")
+	log.Info("Initializing appmigrations table...")
 	err = migrations.SetInitialMigrations(migrations.NewDatastore(app.db.DB, app.db.driverName))
 	if err != nil {
 		return fmt.Errorf("Unable to set initial migrations: %v", err)
+	}
+
+	log.Info("Running migrations...")
+	err = migrations.Migrate(migrations.NewDatastore(app.db.DB, app.db.driverName))
+	if err != nil {
+		return fmt.Errorf("migrate: %s", err)
 	}
 
 	log.Info("Done.")

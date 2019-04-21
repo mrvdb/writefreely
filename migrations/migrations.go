@@ -55,7 +55,8 @@ func (m *migration) Migrate(db *datastore) error {
 }
 
 var migrations = []Migration{
-	New("support user invites", supportUserInvites), // -> V1 (v0.8.0)
+	New("support user invites", supportUserInvites),             // -> V1 (v0.8.0)
+	New("support dynamic instance pages", supportInstancePages), // V1 -> V2 (v0.9.0)
 }
 
 // CurrentVer returns the current migration version the application is on
@@ -64,7 +65,8 @@ func CurrentVer() int {
 }
 
 func SetInitialMigrations(db *datastore) error {
-	_, err := db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+db.now()+", ?)", CurrentVer(), "")
+	// Included schema files represent changes up to V1, so note that in the database
+	_, err := db.Exec("INSERT INTO appmigrations (version, migrated, result) VALUES (?, "+db.now()+", ?)", 1, "")
 	if err != nil {
 		return err
 	}

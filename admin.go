@@ -11,6 +11,7 @@
 package writefreely
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/gogits/gogs/pkg/tool"
 	"github.com/gorilla/mux"
@@ -78,6 +79,23 @@ type inspectedCollection struct {
 	LastPost  string
 }
 
+type instanceContent struct {
+	ID      string
+	Type    string
+	Title   sql.NullString
+	Content string
+	Updated time.Time
+}
+
+func (c instanceContent) UpdatedFriendly() string {
+	/*
+		// TODO: accept a locale in this method and use that for the format
+		var loc monday.Locale = monday.LocaleEnUS
+		return monday.Format(u.Created, monday.DateTimeFormatsByLocale[loc], loc)
+	*/
+	return c.Updated.Format("January 2, 2006, 3:04 PM")
+}
+
 func handleViewAdminDash(app *app, u *User, w http.ResponseWriter, r *http.Request) error {
 	updateAppStats()
 	p := struct {
@@ -86,8 +104,6 @@ func handleViewAdminDash(app *app, u *User, w http.ResponseWriter, r *http.Reque
 		Config    config.AppCfg
 
 		Message, ConfigMessage string
-
-		AboutPage, PrivacyPage string
 	}{
 		UserPage:  NewUserPage(app, r, u, "Admin", nil),
 		SysStatus: sysStatus,
@@ -95,17 +111,6 @@ func handleViewAdminDash(app *app, u *User, w http.ResponseWriter, r *http.Reque
 
 		Message:       r.FormValue("m"),
 		ConfigMessage: r.FormValue("cm"),
-	}
-
-	var err error
-	p.AboutPage, err = getAboutPage(app)
-	if err != nil {
-		return err
-	}
-
-	p.PrivacyPage, _, err = getPrivacyPage(app)
-	if err != nil {
-		return err
 	}
 
 	showUserPage(w, "admin", p)
@@ -224,6 +229,106 @@ func handleViewAdminUser(app *app, u *User, w http.ResponseWriter, r *http.Reque
 	return nil
 }
 
+func handleViewAdminPages(app *app, u *User, w http.ResponseWriter, r *http.Request) error {
+	p := struct {
+		*UserPage
+		Config  config.AppCfg
+		Message string
+
+		Pages []*instanceContent
+	}{
+		UserPage: NewUserPage(app, r, u, "Pages", nil),
+		Config:   app.cfg.App,
+		Message:  r.FormValue("m"),
+	}
+
+	var err error
+	p.Pages, err = app.db.GetInstancePages()
+	if err != nil {
+		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get pages: %v", err)}
+	}
+
+	// Add in default pages
+	var hasAbout, hasPrivacy bool
+	for i, c := range p.Pages {
+		if hasAbout && hasPrivacy {
+			break
+		}
+		if c.ID == "about" {
+			hasAbout = true
+			if !c.Title.Valid {
+				p.Pages[i].Title = defaultAboutTitle(app.cfg)
+			}
+		} else if c.ID == "privacy" {
+			hasPrivacy = true
+			if !c.Title.Valid {
+				p.Pages[i].Title = defaultPrivacyTitle()
+			}
+		}
+	}
+	if !hasAbout {
+		p.Pages = append(p.Pages, &instanceContent{
+			ID:      "about",
+			Title:   defaultAboutTitle(app.cfg),
+			Content: defaultAboutPage(app.cfg),
+			Updated: defaultPageUpdatedTime,
+		})
+	}
+	if !hasPrivacy {
+		p.Pages = append(p.Pages, &instanceContent{
+			ID:      "privacy",
+			Title:   defaultPrivacyTitle(),
+			Content: defaultPrivacyPolicy(app.cfg),
+			Updated: defaultPageUpdatedTime,
+		})
+	}
+
+	showUserPage(w, "pages", p)
+	return nil
+}
+
+func handleViewAdminPage(app *app, u *User, w http.ResponseWriter, r *http.Request) error {
+	vars := mux.Vars(r)
+	slug := vars["slug"]
+	if slug == "" {
+		return impart.HTTPError{http.StatusFound, "/admin/pages"}
+	}
+
+	p := struct {
+		*UserPage
+		Config  config.AppCfg
+		Message string
+
+		Content *instanceContent
+	}{
+		Config:  app.cfg.App,
+		Message: r.FormValue("m"),
+	}
+
+	var err error
+	// Get pre-defined pages, or select slug
+	if slug == "about" {
+		p.Content, err = getAboutPage(app)
+	} else if slug == "privacy" {
+		p.Content, err = getPrivacyPage(app)
+	} else {
+		p.Content, err = app.db.GetDynamicContent(slug)
+	}
+	if err != nil {
+		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get page: %v", err)}
+	}
+	title := "New page"
+	if p.Content != nil {
+		title = "Edit " + p.Content.ID
+	} else {
+		p.Content = &instanceContent{}
+	}
+	p.UserPage = NewUserPage(app, r, u, title, nil)
+
+	showUserPage(w, "view-page", p)
+	return nil
+}
+
 func handleAdminUpdateSite(app *app, u *User, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
 	id := vars["page"]
@@ -235,11 +340,11 @@ func handleAdminUpdateSite(app *app, u *User, w http.ResponseWriter, r *http.Req
 
 	// Update page
 	m := ""
-	err := app.db.UpdateDynamicContent(id, r.FormValue("content"))
+	err := app.db.UpdateDynamicContent(id, r.FormValue("title"), r.FormValue("content"), "page")
 	if err != nil {
 		m = "?m=" + err.Error()
 	}
-	return impart.HTTPError{http.StatusFound, "/admin" + m + "#page-" + id}
+	return impart.HTTPError{http.StatusFound, "/admin/page/" + id + m}
 }
 
 func handleAdminUpdateConfig(app *app, u *User, w http.ResponseWriter, r *http.Request) error {
