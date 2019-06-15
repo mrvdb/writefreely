@@ -1,5 +1,5 @@
 /*
- * Copyright © 2018 A Bunch Tell LLC.
+ * Copyright © 2018-2019 A Bunch Tell LLC.
  *
  * This file is part of WriteFreely.
  *
@@ -17,7 +17,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/go-sql-driver/mysql"
+	"io/ioutil"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strconv"
+	"time"
+
 	"github.com/gorilla/mux"
 	"github.com/writeas/activity/streams"
 	"github.com/writeas/httpsig"
@@ -26,12 +32,6 @@ import (
 	"github.com/writeas/web-core/activitypub"
 	"github.com/writeas/web-core/activitystreams"
 	"github.com/writeas/web-core/log"
-	"io/ioutil"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"strconv"
-	"time"
 )
 
 const (
@@ -62,7 +62,7 @@ func (ru *RemoteUser) AsPerson() *activitystreams.Person {
 	}
 }
 
-func handleFetchCollectionActivities(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleFetchCollectionActivities(app *App, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Server", serverSoftware)
 
 	vars := mux.Vars(r)
@@ -80,13 +80,14 @@ func handleFetchCollectionActivities(app *app, w http.ResponseWriter, r *http.Re
 	if err != nil {
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	p := c.PersonObject()
 
 	return impart.RenderActivityJSON(w, p, http.StatusOK)
 }
 
-func handleFetchCollectionOutbox(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleFetchCollectionOutbox(app *App, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Server", serverSoftware)
 
 	vars := mux.Vars(r)
@@ -104,6 +105,7 @@ func handleFetchCollectionOutbox(app *app, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	if app.cfg.App.SingleUser {
 		if alias != c.Alias {
@@ -127,7 +129,7 @@ func handleFetchCollectionOutbox(app *app, w http.ResponseWriter, r *http.Reques
 	ocp := activitystreams.NewOrderedCollectionPage(accountRoot, "outbox", res.TotalPosts, p)
 	ocp.OrderedItems = []interface{}{}
 
-	posts, err := app.db.GetPosts(c, p, false, true)
+	posts, err := app.db.GetPosts(c, p, false, true, false)
 	for _, pp := range *posts {
 		pp.Collection = res
 		o := pp.ActivityObject()
@@ -138,7 +140,7 @@ func handleFetchCollectionOutbox(app *app, w http.ResponseWriter, r *http.Reques
 	return impart.RenderActivityJSON(w, ocp, http.StatusOK)
 }
 
-func handleFetchCollectionFollowers(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleFetchCollectionFollowers(app *App, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Server", serverSoftware)
 
 	vars := mux.Vars(r)
@@ -156,6 +158,7 @@ func handleFetchCollectionFollowers(app *app, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	accountRoot := c.FederatedAccount()
 
@@ -183,7 +186,7 @@ func handleFetchCollectionFollowers(app *app, w http.ResponseWriter, r *http.Req
 	return impart.RenderActivityJSON(w, ocp, http.StatusOK)
 }
 
-func handleFetchCollectionFollowing(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleFetchCollectionFollowing(app *App, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Server", serverSoftware)
 
 	vars := mux.Vars(r)
@@ -201,6 +204,7 @@ func handleFetchCollectionFollowing(app *app, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	accountRoot := c.FederatedAccount()
 
@@ -218,7 +222,7 @@ func handleFetchCollectionFollowing(app *app, w http.ResponseWriter, r *http.Req
 	return impart.RenderActivityJSON(w, ocp, http.StatusOK)
 }
 
-func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleFetchCollectionInbox(app *App, w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Server", serverSoftware)
 
 	vars := mux.Vars(r)
@@ -234,6 +238,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 		// TODO: return Reject?
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	if debugging {
 		dump, err := httputil.DumpRequest(r, true)
@@ -349,7 +354,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 			log.Error("No to! %v", err)
 			return
 		}
-		err = makeActivityPost(p, fullActor.Inbox, am)
+		err = makeActivityPost(app.cfg.App.Host, p, fullActor.Inbox, am)
 		if err != nil {
 			log.Error("Unable to make activity POST: %v", err)
 			return
@@ -370,13 +375,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 				// Add follower locally, since it wasn't found before
 				res, err := t.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox) VALUES (?, ?, ?)", fullActor.ID, fullActor.Inbox, fullActor.Endpoints.SharedInbox)
 				if err != nil {
-					if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-						if mysqlErr.Number != mySQLErrDuplicateKey {
-							t.Rollback()
-							log.Error("Couldn't add new remoteuser in DB: %v\n", err)
-							return
-						}
-					} else {
+					if !app.db.isDuplicateKeyErr(err) {
 						t.Rollback()
 						log.Error("Couldn't add new remoteuser in DB: %v\n", err)
 						return
@@ -393,13 +392,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 				// Add in key
 				_, err = t.Exec("INSERT INTO remoteuserkeys (id, remote_user_id, public_key) VALUES (?, ?, ?)", fullActor.PublicKey.ID, followerID, fullActor.PublicKey.PublicKeyPEM)
 				if err != nil {
-					if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-						if mysqlErr.Number != mySQLErrDuplicateKey {
-							t.Rollback()
-							log.Error("Couldn't add follower keys in DB: %v\n", err)
-							return
-						}
-					} else {
+					if !app.db.isDuplicateKeyErr(err) {
 						t.Rollback()
 						log.Error("Couldn't add follower keys in DB: %v\n", err)
 						return
@@ -410,13 +403,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 			// Add follow
 			_, err = t.Exec("INSERT INTO remotefollows (collection_id, remote_user_id, created) VALUES (?, ?, "+app.db.now()+")", c.ID, followerID)
 			if err != nil {
-				if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-					if mysqlErr.Number != mySQLErrDuplicateKey {
-						t.Rollback()
-						log.Error("Couldn't add follower in DB: %v\n", err)
-						return
-					}
-				} else {
+				if !app.db.isDuplicateKeyErr(err) {
 					t.Rollback()
 					log.Error("Couldn't add follower in DB: %v\n", err)
 					return
@@ -441,7 +428,7 @@ func handleFetchCollectionInbox(app *app, w http.ResponseWriter, r *http.Request
 	return nil
 }
 
-func makeActivityPost(p *activitystreams.Person, url string, m interface{}) error {
+func makeActivityPost(hostName string, p *activitystreams.Person, url string, m interface{}) error {
 	log.Info("POST %s", url)
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -495,7 +482,7 @@ func makeActivityPost(p *activitystreams.Person, url string, m interface{}) erro
 	return nil
 }
 
-func resolveIRI(url string) ([]byte, error) {
+func resolveIRI(hostName, url string) ([]byte, error) {
 	log.Info("GET %s", url)
 
 	r, _ := http.NewRequest("GET", url, nil)
@@ -531,7 +518,7 @@ func resolveIRI(url string) ([]byte, error) {
 	return body, nil
 }
 
-func deleteFederatedPost(app *app, p *PublicPost, collID int64) error {
+func deleteFederatedPost(app *App, p *PublicPost, collID int64) error {
 	if debugging {
 		log.Info("Deleting federated post!")
 	}
@@ -548,10 +535,14 @@ func deleteFederatedPost(app *app, p *PublicPost, collID int64) error {
 
 	inboxes := map[string][]string{}
 	for _, f := range *followers {
-		if _, ok := inboxes[f.SharedInbox]; ok {
-			inboxes[f.SharedInbox] = append(inboxes[f.SharedInbox], f.ActorID)
+		inbox := f.SharedInbox
+		if inbox == "" {
+			inbox = f.Inbox
+		}
+		if _, ok := inboxes[inbox]; ok {
+			inboxes[inbox] = append(inboxes[inbox], f.ActorID)
 		} else {
-			inboxes[f.SharedInbox] = []string{f.ActorID}
+			inboxes[inbox] = []string{f.ActorID}
 		}
 	}
 
@@ -561,7 +552,7 @@ func deleteFederatedPost(app *app, p *PublicPost, collID int64) error {
 			na.CC = append(na.CC, f)
 		}
 
-		err = makeActivityPost(actor, si, activitystreams.NewDeleteActivity(na))
+		err = makeActivityPost(app.cfg.App.Host, actor, si, activitystreams.NewDeleteActivity(na))
 		if err != nil {
 			log.Error("Couldn't delete post! %v", err)
 		}
@@ -569,7 +560,7 @@ func deleteFederatedPost(app *app, p *PublicPost, collID int64) error {
 	return nil
 }
 
-func federatePost(app *app, p *PublicPost, collID int64, isUpdate bool) error {
+func federatePost(app *App, p *PublicPost, collID int64, isUpdate bool) error {
 	if debugging {
 		if isUpdate {
 			log.Info("Federating updated post!")
@@ -591,10 +582,14 @@ func federatePost(app *app, p *PublicPost, collID int64, isUpdate bool) error {
 
 	inboxes := map[string][]string{}
 	for _, f := range *followers {
-		if _, ok := inboxes[f.SharedInbox]; ok {
-			inboxes[f.SharedInbox] = append(inboxes[f.SharedInbox], f.ActorID)
+		inbox := f.SharedInbox
+		if inbox == "" {
+			inbox = f.Inbox
+		}
+		if _, ok := inboxes[inbox]; ok {
+			inboxes[inbox] = append(inboxes[inbox], f.ActorID)
 		} else {
-			inboxes[f.SharedInbox] = []string{f.ActorID}
+			inboxes[inbox] = []string{f.ActorID}
 		}
 	}
 
@@ -611,7 +606,7 @@ func federatePost(app *app, p *PublicPost, collID int64, isUpdate bool) error {
 			activity.To = na.To
 			activity.CC = na.CC
 		}
-		err = makeActivityPost(actor, si, activity)
+		err = makeActivityPost(app.cfg.App.Host, actor, si, activity)
 		if err != nil {
 			log.Error("Couldn't post! %v", err)
 		}
@@ -619,7 +614,7 @@ func federatePost(app *app, p *PublicPost, collID int64, isUpdate bool) error {
 	return nil
 }
 
-func getRemoteUser(app *app, actorID string) (*RemoteUser, error) {
+func getRemoteUser(app *App, actorID string) (*RemoteUser, error) {
 	u := RemoteUser{ActorID: actorID}
 	err := app.db.QueryRow("SELECT id, inbox, shared_inbox FROM remoteusers WHERE actor_id = ?", actorID).Scan(&u.ID, &u.Inbox, &u.SharedInbox)
 	switch {
@@ -633,7 +628,7 @@ func getRemoteUser(app *app, actorID string) (*RemoteUser, error) {
 	return &u, nil
 }
 
-func getActor(app *app, actorIRI string) (*activitystreams.Person, *RemoteUser, error) {
+func getActor(app *App, actorIRI string) (*activitystreams.Person, *RemoteUser, error) {
 	log.Info("Fetching actor %s locally", actorIRI)
 	actor := &activitystreams.Person{}
 	remoteUser, err := getRemoteUser(app, actorIRI)
@@ -642,13 +637,12 @@ func getActor(app *app, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 			if iErr.Status == http.StatusNotFound {
 				// Fetch remote actor
 				log.Info("Not found; fetching actor %s remotely", actorIRI)
-				actorResp, err := resolveIRI(actorIRI)
+				actorResp, err := resolveIRI(app.cfg.App.Host, actorIRI)
 				if err != nil {
 					log.Error("Unable to get actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't fetch actor."}
 				}
-				if err := json.Unmarshal(actorResp, &actor); err != nil {
-					// FIXME: Hubzilla has an object for the Actor's url: cannot unmarshal object into Go struct field Person.url of type string
+				if err := unmarshalActor(actorResp, actor); err != nil {
 					log.Error("Unable to unmarshal actor! %v", err)
 					return nil, nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't parse actor."}
 				}
@@ -662,4 +656,49 @@ func getActor(app *app, actorIRI string) (*activitystreams.Person, *RemoteUser, 
 		actor = remoteUser.AsPerson()
 	}
 	return actor, remoteUser, nil
+}
+
+// unmarshal actor normalizes the actor response to conform to
+// the type Person from github.com/writeas/web-core/activitysteams
+//
+// some implementations return different context field types
+// this converts any non-slice contexts into a slice
+func unmarshalActor(actorResp []byte, actor *activitystreams.Person) error {
+	// FIXME: Hubzilla has an object for the Actor's url: cannot unmarshal object into Go struct field Person.url of type string
+
+	// flexActor overrides the Context field to allow
+	// all valid representations during unmarshal
+	flexActor := struct {
+		activitystreams.Person
+		Context json.RawMessage `json:"@context,omitempty"`
+	}{}
+	if err := json.Unmarshal(actorResp, &flexActor); err != nil {
+		return err
+	}
+
+	actor.Endpoints = flexActor.Endpoints
+	actor.Followers = flexActor.Followers
+	actor.Following = flexActor.Following
+	actor.ID = flexActor.ID
+	actor.Icon = flexActor.Icon
+	actor.Inbox = flexActor.Inbox
+	actor.Name = flexActor.Name
+	actor.Outbox = flexActor.Outbox
+	actor.PreferredUsername = flexActor.PreferredUsername
+	actor.PublicKey = flexActor.PublicKey
+	actor.Summary = flexActor.Summary
+	actor.Type = flexActor.Type
+	actor.URL = flexActor.URL
+
+	func(val interface{}) {
+		switch val.(type) {
+		case []interface{}:
+			// already a slice, do nothing
+			actor.Context = val.([]interface{})
+		default:
+			actor.Context = []interface{}{val}
+		}
+	}(flexActor.Context)
+
+	return nil
 }

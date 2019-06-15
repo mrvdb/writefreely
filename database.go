@@ -29,6 +29,7 @@ import (
 	"github.com/writeas/web-core/log"
 	"github.com/writeas/web-core/query"
 	"github.com/writeas/writefreely/author"
+	"github.com/writeas/writefreely/key"
 )
 
 const (
@@ -44,7 +45,7 @@ var (
 
 type writestore interface {
 	CreateUser(*User, string) error
-	UpdateUserEmail(keys *keychain, userID int64, email string) error
+	UpdateUserEmail(keys *key.Keychain, userID int64, email string) error
 	UpdateEncryptedUserEmail(int64, []byte) error
 	GetUserByID(int64) (*User, error)
 	GetUserForAuth(string) (*User, error)
@@ -60,7 +61,7 @@ type writestore interface {
 	GetTemporaryAccessToken(userID int64, validSecs int) (string, error)
 	GetTemporaryOneTimeAccessToken(userID int64, validSecs int, oneTime bool) (string, error)
 	DeleteAccount(userID int64) (l *string, err error)
-	ChangeSettings(app *app, u *User, s *userSettings) error
+	ChangeSettings(app *App, u *User, s *userSettings) error
 	ChangePassphrase(userID int64, sudo bool, curPass string, hashedPass []byte) error
 
 	GetCollections(u *User) (*[]Collection, error)
@@ -104,7 +105,7 @@ type writestore interface {
 	ClaimPosts(userID int64, collAlias string, posts *[]ClaimPostRequest) (*[]ClaimPostResult, error)
 
 	GetPostsCount(c *CollectionObj, includeFuture bool)
-	GetPosts(c *Collection, page int, includeFuture, forceRecentFirst bool) (*[]PublicPost, error)
+	GetPosts(c *Collection, page int, includeFuture, forceRecentFirst, includePinned bool) (*[]PublicPost, error)
 	GetPostsTagged(c *Collection, tag string, page int, includeFuture bool) (*[]PublicPost, error)
 
 	GetAPFollowers(c *Collection) (*[]RemoteUser, error)
@@ -219,8 +220,8 @@ func (db *datastore) CreateUser(u *User, collectionTitle string) error {
 
 // FIXME: We're returning errors inconsistently in this file. Do we use Errorf
 // for returned value, or impart?
-func (db *datastore) UpdateUserEmail(keys *keychain, userID int64, email string) error {
-	encEmail, err := data.Encrypt(keys.emailKey, email)
+func (db *datastore) UpdateUserEmail(keys *key.Keychain, userID int64, email string) error {
+	encEmail, err := data.Encrypt(keys.EmailKey, email)
 	if err != nil {
 		return fmt.Errorf("Couldn't encrypt email %s: %s\n", email, err)
 	}
@@ -1062,10 +1063,11 @@ func (db *datastore) GetPostsCount(c *CollectionObj, includeFuture bool) {
 	c.TotalPosts = int(count)
 }
 
-// GetPosts retrieves all standard (non-pinned) posts for the given Collection.
+// GetPosts retrieves all posts for the given Collection.
 // It will return future posts if `includeFuture` is true.
+// It will include only standard (non-pinned) posts unless `includePinned` is true.
 // TODO: change includeFuture to isOwner, since that's how it's used
-func (db *datastore) GetPosts(c *Collection, page int, includeFuture, forceRecentFirst bool) (*[]PublicPost, error) {
+func (db *datastore) GetPosts(c *Collection, page int, includeFuture, forceRecentFirst, includePinned bool) (*[]PublicPost, error) {
 	collID := c.ID
 
 	cf := c.NewFormat()
@@ -1089,7 +1091,11 @@ func (db *datastore) GetPosts(c *Collection, page int, includeFuture, forceRecen
 	if !includeFuture {
 		timeCondition = "AND created <= " + db.now()
 	}
-	rows, err := db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? AND pinned_position IS NULL "+timeCondition+" ORDER BY created "+order+limitStr, collID)
+	pinnedCondition := ""
+	if !includePinned {
+		pinnedCondition = "AND pinned_position IS NULL"
+	}
+	rows, err := db.Query("SELECT "+postCols+" FROM posts WHERE collection_id = ? "+pinnedCondition+" "+timeCondition+" ORDER BY created "+order+limitStr, collID)
 	if err != nil {
 		log.Error("Failed selecting from posts: %v", err)
 		return nil, impart.HTTPError{http.StatusInternalServerError, "Couldn't retrieve collection posts."}
@@ -1774,13 +1780,13 @@ func (db *datastore) GetUserPostsCount(userID int64) int64 {
 
 // ChangeSettings takes a User and applies the changes in the given
 // userSettings, MODIFYING THE USER with successful changes.
-func (db *datastore) ChangeSettings(app *app, u *User, s *userSettings) error {
+func (db *datastore) ChangeSettings(app *App, u *User, s *userSettings) error {
 	var errPass error
 	q := query.NewUpdate()
 
 	// Update email if given
 	if s.Email != "" {
-		encEmail, err := data.Encrypt(app.keys.emailKey, s.Email)
+		encEmail, err := data.Encrypt(app.keys.EmailKey, s.Email)
 		if err != nil {
 			log.Error("Couldn't encrypt email %s: %s\n", s.Email, err)
 			return impart.HTTPError{http.StatusInternalServerError, "Unable to encrypt email address."}

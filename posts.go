@@ -1,5 +1,5 @@
 /*
- * Copyright © 2018 A Bunch Tell LLC.
+ * Copyright © 2018-2019 A Bunch Tell LLC.
  *
  * This file is part of WriteFreely.
  *
@@ -14,6 +14,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html/template"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
 	"github.com/gorilla/mux"
 	"github.com/guregu/null"
 	"github.com/guregu/null/zero"
@@ -31,11 +37,6 @@ import (
 	"github.com/writeas/web-core/tags"
 	"github.com/writeas/writefreely/page"
 	"github.com/writeas/writefreely/parse"
-	"html/template"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
 )
 
 const (
@@ -67,7 +68,8 @@ type (
 	}
 
 	AuthenticatedPost struct {
-		ID string `json:"id" schema:"id"`
+		ID  string `json:"id" schema:"id"`
+		Web bool   `json:"web" schema:"web"`
 		*SubmittedPost
 	}
 
@@ -260,7 +262,7 @@ func (p *Post) HasTitleLink() bool {
 	return hasLink
 }
 
-func handleViewPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func handleViewPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
 	friendlyID := vars["post"]
 
@@ -275,7 +277,7 @@ func handleViewPost(app *app, w http.ResponseWriter, r *http.Request) error {
 		return handleTemplatedPage(app, w, r, t)
 	} else if (strings.Contains(r.URL.Path, ".") && !isRaw && !isMarkdown) || r.URL.Path == "/robots.txt" || r.URL.Path == "/manifest.json" {
 		// Serve static file
-		shttp.ServeHTTP(w, r)
+		app.shttp.ServeHTTP(w, r)
 		return nil
 	}
 
@@ -466,7 +468,7 @@ func handleViewPost(app *app, w http.ResponseWriter, r *http.Request) error {
 //   /posts
 //   /posts?collection={alias}
 // ? /collections/{alias}/posts
-func newPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func newPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	reqJSON := IsJSON(r.Header.Get("Content-Type"))
 	vars := mux.Vars(r)
 	collAlias := vars["alias"]
@@ -591,7 +593,7 @@ func newPost(app *app, w http.ResponseWriter, r *http.Request) error {
 	return response
 }
 
-func existingPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func existingPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	reqJSON := IsJSON(r.Header.Get("Content-Type"))
 	vars := mux.Vars(r)
 	postID := vars["post"]
@@ -621,6 +623,10 @@ func existingPost(app *app, w http.ResponseWriter, r *http.Request) error {
 			log.Error("Couldn't decode post update form request: %v\n", err)
 			return ErrBadFormData
 		}
+	}
+
+	if p.Web {
+		p.IsRTL.Valid = true
 	}
 
 	if p.SubmittedPost == nil {
@@ -711,7 +717,7 @@ func existingPost(app *app, w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func deletePost(app *app, w http.ResponseWriter, r *http.Request) error {
+func deletePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
 	friendlyID := vars["post"]
 	editToken := r.FormValue("token")
@@ -732,7 +738,24 @@ func deletePost(app *app, w http.ResponseWriter, r *http.Request) error {
 	var collID sql.NullInt64
 	var coll *Collection
 	var pp *PublicPost
-	if accessToken != "" || u != nil {
+	if editToken != "" {
+		// TODO: SELECT owner_id, as well, and return appropriate error if NULL instead of running two queries
+		var dummy int64
+		err = app.db.QueryRow("SELECT 1 FROM posts WHERE id = ?", friendlyID).Scan(&dummy)
+		switch {
+		case err == sql.ErrNoRows:
+			return impart.HTTPError{http.StatusNotFound, "Post not found."}
+		}
+		err = app.db.QueryRow("SELECT 1 FROM posts WHERE id = ? AND owner_id IS NULL", friendlyID).Scan(&dummy)
+		switch {
+		case err == sql.ErrNoRows:
+			// Post already has an owner. This could provide a bad experience
+			// for the user, but it's more important to ensure data isn't lost
+			// unexpectedly. So prevent deletion via token.
+			return impart.HTTPError{http.StatusConflict, "This post belongs to some user (hopefully yours). Please log in and delete it from that user's account."}
+		}
+		res, err = app.db.Exec("DELETE FROM posts WHERE id = ? AND modify_token = ? AND owner_id IS NULL", friendlyID, editToken)
+	} else if accessToken != "" || u != nil {
 		// Caller provided some way to authenticate; assume caller expects the
 		// post to be deleted based on a specific post owner, thus we should
 		// return corresponding errors.
@@ -780,26 +803,7 @@ func deletePost(app *app, w http.ResponseWriter, r *http.Request) error {
 			res, err = t.Exec("DELETE FROM posts WHERE id = ? AND owner_id = ?", friendlyID, ownerID)
 		}
 	} else {
-		if editToken == "" {
-			return impart.HTTPError{http.StatusBadRequest, "No authenticated user or post token given."}
-		}
-
-		// TODO: SELECT owner_id, as well, and return appropriate error if NULL instead of running two queries
-		var dummy int64
-		err = app.db.QueryRow("SELECT 1 FROM posts WHERE id = ?", friendlyID).Scan(&dummy)
-		switch {
-		case err == sql.ErrNoRows:
-			return impart.HTTPError{http.StatusNotFound, "Post not found."}
-		}
-		err = app.db.QueryRow("SELECT 1 FROM posts WHERE id = ? AND owner_id IS NULL", friendlyID).Scan(&dummy)
-		switch {
-		case err == sql.ErrNoRows:
-			// Post already has an owner. This could provide a bad experience
-			// for the user, but it's more important to ensure data isn't lost
-			// unexpectedly. So prevent deletion via token.
-			return impart.HTTPError{http.StatusConflict, "This post belongs to some user (hopefully yours). Please log in and delete it from that user's account."}
-		}
-		res, err = app.db.Exec("DELETE FROM posts WHERE id = ? AND modify_token = ? AND owner_id IS NULL", friendlyID, editToken)
+		return impart.HTTPError{http.StatusBadRequest, "No authenticated user or post token given."}
 	}
 	if err != nil {
 		return err
@@ -830,7 +834,7 @@ func deletePost(app *app, w http.ResponseWriter, r *http.Request) error {
 }
 
 // addPost associates a post with the authenticated user.
-func addPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func addPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var ownerID int64
 
 	// Authenticate user
@@ -879,7 +883,7 @@ func addPost(app *app, w http.ResponseWriter, r *http.Request) error {
 	return impart.WriteSuccess(w, res, http.StatusOK)
 }
 
-func dispersePost(app *app, w http.ResponseWriter, r *http.Request) error {
+func dispersePost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var ownerID int64
 
 	// Authenticate user
@@ -923,7 +927,7 @@ type (
 )
 
 // pinPost pins a post to a blog
-func pinPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func pinPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var userID int64
 
 	// Authenticate user
@@ -981,7 +985,7 @@ func pinPost(app *app, w http.ResponseWriter, r *http.Request) error {
 	return impart.WriteSuccess(w, res, http.StatusOK)
 }
 
-func fetchPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func fetchPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	var collID int64
 	var coll *Collection
 	var err error
@@ -992,6 +996,7 @@ func fetchPost(app *app, w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		coll.hostName = app.cfg.App.Host
 		_, err = apiCheckCollectionPermissions(app, r, coll)
 		if err != nil {
 			return err
@@ -1030,7 +1035,7 @@ func fetchPost(app *app, w http.ResponseWriter, r *http.Request) error {
 	return impart.WriteSuccess(w, p, http.StatusOK)
 }
 
-func fetchPostProperty(app *app, w http.ResponseWriter, r *http.Request) error {
+func fetchPostProperty(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
 	p, err := app.db.GetPostProperty(vars["post"], 0, vars["property"])
 	if err != nil {
@@ -1052,7 +1057,7 @@ func (p *Post) processPost() PublicPost {
 
 func (p *PublicPost) CanonicalURL() string {
 	if p.Collection == nil || p.Collection.Alias == "" {
-		return hostName + "/" + p.ID
+		return p.Collection.hostName + "/" + p.ID
 	}
 	return p.Collection.CanonicalURL() + p.Slug.String
 }
@@ -1083,7 +1088,7 @@ func (p *PublicPost) ActivityObject() *activitystreams.Object {
 		if isSingleUser {
 			tagBaseURL = p.Collection.CanonicalURL() + "tag:"
 		} else {
-			tagBaseURL = fmt.Sprintf("%s/%s/tag:", hostName, p.Collection.Alias)
+			tagBaseURL = fmt.Sprintf("%s/%s/tag:", p.Collection.hostName, p.Collection.Alias)
 		}
 		for _, t := range p.Tags {
 			o.Tag = append(o.Tag, activitystreams.Tag{
@@ -1128,7 +1133,7 @@ func (p *SubmittedPost) isFontValid() bool {
 	return valid
 }
 
-func getRawPost(app *app, friendlyID string) *RawPost {
+func getRawPost(app *App, friendlyID string) *RawPost {
 	var content, font, title string
 	var isRTL sql.NullBool
 	var lang sql.NullString
@@ -1148,7 +1153,7 @@ func getRawPost(app *app, friendlyID string) *RawPost {
 }
 
 // TODO; return a Post!
-func getRawCollectionPost(app *app, slug, collAlias string) *RawPost {
+func getRawCollectionPost(app *App, slug, collAlias string) *RawPost {
 	var id, title, content, font string
 	var isRTL sql.NullBool
 	var lang sql.NullString
@@ -1185,7 +1190,7 @@ func getRawCollectionPost(app *app, slug, collAlias string) *RawPost {
 	}
 }
 
-func viewCollectionPost(app *app, w http.ResponseWriter, r *http.Request) error {
+func viewCollectionPost(app *App, w http.ResponseWriter, r *http.Request) error {
 	vars := mux.Vars(r)
 	slug := vars["slug"]
 
@@ -1196,7 +1201,7 @@ func viewCollectionPost(app *app, w http.ResponseWriter, r *http.Request) error 
 
 	if strings.Contains(r.URL.Path, ".") && !isRaw {
 		// Serve static file
-		shttp.ServeHTTP(w, r)
+		app.shttp.ServeHTTP(w, r)
 		return nil
 	}
 
@@ -1240,6 +1245,7 @@ func viewCollectionPost(app *app, w http.ResponseWriter, r *http.Request) error 
 		}
 		return err
 	}
+	c.hostName = app.cfg.App.Host
 
 	// Check collection permissions
 	if c.IsPrivate() && (u == nil || u.ID != c.OwnerID) {

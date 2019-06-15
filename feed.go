@@ -1,5 +1,5 @@
 /*
- * Copyright © 2018 A Bunch Tell LLC.
+ * Copyright © 2018-2019 A Bunch Tell LLC.
  *
  * This file is part of WriteFreely.
  *
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-func ViewFeed(app *app, w http.ResponseWriter, req *http.Request) error {
+func ViewFeed(app *App, w http.ResponseWriter, req *http.Request) error {
 	alias := collectionAliasFromReq(req)
 
 	// Display collection if this is a collection
@@ -34,6 +34,7 @@ func ViewFeed(app *app, w http.ResponseWriter, req *http.Request) error {
 	if err != nil {
 		return nil
 	}
+	c.hostName = app.cfg.App.Host
 
 	if c.IsPrivate() || c.IsProtected() {
 		return ErrCollectionNotFound
@@ -56,7 +57,7 @@ func ViewFeed(app *app, w http.ResponseWriter, req *http.Request) error {
 	if tag != "" {
 		coll.Posts, _ = app.db.GetPostsTagged(c, tag, 1, false)
 	} else {
-		coll.Posts, _ = app.db.GetPosts(c, 1, false, true)
+		coll.Posts, _ = app.db.GetPosts(c, 1, false, true, false)
 	}
 
 	author := ""
