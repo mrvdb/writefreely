@@ -54,7 +54,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.9.0"
+	softwareVer = "0.10.0"
 
 	// DEPRECATED VARS
 	isSingleUser bool
@@ -186,22 +186,45 @@ func handleViewHome(app *App, w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Multi-user instance
-	u := getUserSession(app, r)
-	if u != nil {
-		// User is logged in, so show the Pad
-		return handleViewPad(app, w, r)
-	}
+	forceLanding := r.FormValue("landing") == "1"
+	if !forceLanding {
+		// Show correct page based on user auth status and configured landing path
+		u := getUserSession(app, r)
+		if u != nil {
+			// User is logged in, so show the Pad
+			return handleViewPad(app, w, r)
+		}
 
-	if land := app.cfg.App.LandingPath(); land != "/" {
-		return impart.HTTPError{http.StatusFound, land}
+		if land := app.cfg.App.LandingPath(); land != "/" {
+			return impart.HTTPError{http.StatusFound, land}
+		}
 	}
 
 	p := struct {
 		page.StaticPage
 		Flashes []template.HTML
+		Banner  template.HTML
+		Content template.HTML
+
+		ForcedLanding bool
 	}{
-		StaticPage: pageForReq(app, r),
+		StaticPage:    pageForReq(app, r),
+		ForcedLanding: forceLanding,
 	}
+
+	banner, err := getLandingBanner(app)
+	if err != nil {
+		log.Error("unable to get landing banner: %v", err)
+		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get banner: %v", err)}
+	}
+	p.Banner = template.HTML(applyMarkdown([]byte(banner.Content), ""))
+
+	content, err := getLandingBody(app)
+	if err != nil {
+		log.Error("unable to get landing content: %v", err)
+		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not get content: %v", err)}
+	}
+	p.Content = template.HTML(applyMarkdown([]byte(content.Content), ""))
 
 	// Get error messages
 	session, err := app.sessionStore.Get(r, cookieName)
@@ -289,6 +312,7 @@ func pageForReq(app *App, r *http.Request) page.StaticPage {
 			p.Username = u.Username
 		}
 	}
+	p.CanViewReader = !app.cfg.App.Private || u != nil
 
 	return p
 }
@@ -443,8 +467,19 @@ func CreateConfig(app *App) error {
 }
 
 // DoConfig runs the interactive configuration process.
-func DoConfig(app *App) {
-	d, err := config.Configure(app.cfgFile)
+func DoConfig(app *App, configSections string) {
+	if configSections == "" {
+		configSections = "server db app"
+	}
+	// let's check there aren't any garbage in the list
+	configSectionsArray := strings.Split(configSections, " ")
+	for _, element := range configSectionsArray {
+		if element != "server" && element != "db" && element != "app" {
+			log.Error("Invalid argument to --sections. Valid arguments are only \"server\", \"db\" and \"app\"")
+			os.Exit(1)
+		}
+	}
+	d, err := config.Configure(app.cfgFile, configSections)
 	if err != nil {
 		log.Error("Unable to configure: %v", err)
 		os.Exit(1)
