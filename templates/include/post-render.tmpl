@@ -26,7 +26,7 @@
     // Given a set of nodes, run highlighting on them
     function highlight(nodes) {
       for (i=0; i < nodes.length; i++) {
-	lang = toLowerCase(nodes[i].className.replace('language-',''));
+	lang = nodes[i].className.replace('language-','').toLowerCase();
 	if (aliasmap[lang]) {
 	  lo = hljs.getLanguage(aliasmap[lang]);
 	  hljs.registerLanguage(lang, function() {return lo;});
@@ -64,7 +64,7 @@
       var jss = [hlbaseUri + "highlight.min.js"];
       // Check what we need to load
       for (i=0; i < lb.length; i++) {
-        lang = toLowerCase(lb[i].className.replace('language-',''));
+        lang = lb[i].className.replace('language-','').toLowerCase();
 
 		// Support the aliases specified above
         if (aliasmap[lang]) lang = aliasmap[lang];
