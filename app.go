@@ -564,12 +564,12 @@ func CreateSchema(apper Apper) error {
 }
 
 // Migrate runs all necessary database migrations.
-func Migrate(app *App) error {
-	app.LoadConfig()
-	connectToDatabase(app)
-	defer shutdown(app)
+func Migrate(apper Apper) error {
+	apper.LoadConfig()
+	connectToDatabase(apper.App())
+	defer shutdown(apper.App())
 
-	err := migrations.Migrate(migrations.NewDatastore(app.db.DB, app.db.driverName))
+	err := migrations.Migrate(migrations.NewDatastore(apper.App().db.DB, apper.App().db.driverName))
 	if err != nil {
 		return fmt.Errorf("migrate: %s", err)
 	}
@@ -577,14 +577,14 @@ func Migrate(app *App) error {
 }
 
 // ResetPassword runs the interactive password reset process.
-func ResetPassword(app *App, username string) error {
+func ResetPassword(apper Apper, username string) error {
 	// Connect to the database
-	app.LoadConfig()
-	connectToDatabase(app)
-	defer shutdown(app)
+	apper.LoadConfig()
+	connectToDatabase(apper.App())
+	defer shutdown(apper.App())
 
 	// Fetch user
-	u, err := app.db.GetUserForAuth(username)
+	u, err := apper.App().db.GetUserForAuth(username)
 	if err != nil {
 		log.Error("Get user: %s", err)
 		os.Exit(1)
@@ -606,7 +606,7 @@ func ResetPassword(app *App, username string) error {
 
 	// Do the update
 	log.Info("Updating...")
-	err = adminResetPassword(app, u, newPass)
+	err = adminResetPassword(apper.App(), u, newPass)
 	if err != nil {
 		log.Error("%s", err)
 		os.Exit(1)
