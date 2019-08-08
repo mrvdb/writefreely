@@ -64,9 +64,11 @@ type (
 
 		// Site appearance
 		Theme      string `ini:"theme"`
+		Editor     string `ini:"editor"`
 		JSDisabled bool   `ini:"disable_js"`
 		WebFonts   bool   `ini:"webfonts"`
 		Landing    string `ini:"landing"`
+		WFModesty  bool   `ini:"wf_modesty"`
 
 		// Users
 		SingleUser       bool `ini:"single_user"`
@@ -84,6 +86,9 @@ type (
 		// Additional functions
 		LocalTimeline bool   `ini:"local_timeline"`
 		UserInvites   string `ini:"user_invites"`
+
+		// Defaults
+		DefaultVisibility string `ini:"default_visibility"`
 	}
 
 	// Config holds the complete configuration for running a writefreely instance
