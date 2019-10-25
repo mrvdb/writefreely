@@ -59,8 +59,9 @@
         lb.forEach(block => {
             lang = block.className.replace('language-','').toLowerCase();
 
-            // Support the aliases specified above
+            // Support the aliases specified above, make sure the block has the non-alias class
             if (aliasmap[lang]) lang = aliasmap[lang];
+			block.className = 'language-' + lang;
             lurl = hlbaseUri + "highlightjs/" + lang + ".min.js";
             if (!jss.includes(lurl)) {
                 jss.push(lurl);
