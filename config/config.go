@@ -12,8 +12,9 @@
 package config
 
 import (
-	"gopkg.in/ini.v1"
 	"strings"
+
+	"gopkg.in/ini.v1"
 )
 
 const (
@@ -93,6 +94,7 @@ type (
 
 		// Site functionality
 		Chorus        bool `ini:"chorus"`
+		Forest        bool `ini:"forest"` // The admin cares about the forest, not the trees. Hide unnecessary technical info.
 		DisableDrafts bool `ini:"disable_drafts"`
 
 		// Users
@@ -114,6 +116,9 @@ type (
 
 		// Defaults
 		DefaultVisibility string `ini:"default_visibility"`
+
+		// Check for Updates
+		UpdateChecks bool `ini:"update_checks"`
 	}
 
 	// Config holds the complete configuration for running a writefreely instance
