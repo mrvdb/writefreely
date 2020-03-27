@@ -56,7 +56,7 @@ var (
 	debugging bool
 
 	// Software version can be set from git env using -ldflags
-	softwareVer = "0.11.2"
+	softwareVer = "0.12.0"
 
 	// DEPRECATED VARS
 	isSingleUser bool
@@ -219,6 +219,10 @@ func handleViewHome(app *App, w http.ResponseWriter, r *http.Request) error {
 		if u != nil {
 			// User is logged in, so show the Pad
 			return handleViewPad(app, w, r)
+		}
+
+		if app.cfg.App.Private {
+			return viewLogin(app, w, r)
 		}
 
 		if land := app.cfg.App.LandingPath(); land != "/" {

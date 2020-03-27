@@ -39,6 +39,8 @@ import (
 const (
 	mySQLErrDuplicateKey = 1062
 	mySQLErrCollationMix = 1267
+	mySQLErrTooManyConns = 1040
+	mySQLErrMaxUserConns = 1203
 
 	driverMySQL  = "mysql"
 	driverSQLite = "sqlite3"
@@ -795,6 +797,8 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, impart.HTTPError{http.StatusNotFound, "Collection doesn't exist."}
+	case db.isHighLoadError(err):
+		return nil, ErrUnavailable
 	case err != nil:
 		log.Error("Failed selecting from collections: %v", err)
 		return nil, err
@@ -2643,6 +2647,7 @@ func handleFailedPostInsert(err error) error {
 }
 
 func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, error) {
+	handle = strings.TrimLeft(handle, "@")
 	actorIRI := ""
 	remoteUser, err := getRemoteUserFromHandle(app, handle)
 	if err != nil {
@@ -2655,21 +2660,21 @@ func (db *datastore) GetProfilePageFromHandle(app *App, handle string) (string, 
 		if errRemoteUser == nil {
 			_, err := app.db.Exec("UPDATE remoteusers SET handle = ? WHERE actor_id = ?", handle, actorIRI)
 			if err != nil {
-				log.Error("Can't update handle (" + handle + ") in database for user " + actorIRI)
+				log.Error("Couldn't update handle '%s' for user %s", handle, actorIRI)
 			}
 		} else {
 			// this probably means we don't have the user in the table so let's try to insert it
 			// here we need to ask the server for the inboxes
 			remoteActor, err := activityserve.NewRemoteActor(actorIRI)
 			if err != nil {
-				log.Error("Couldn't fetch remote actor", err)
+				log.Error("Couldn't fetch remote actor: %v", err)
 			}
 			if debugging {
 				log.Info("%s %s %s %s", actorIRI, remoteActor.GetInbox(), remoteActor.GetSharedInbox(), handle)
 			}
 			_, err = app.db.Exec("INSERT INTO remoteusers (actor_id, inbox, shared_inbox, handle) VALUES(?, ?, ?, ?)", actorIRI, remoteActor.GetInbox(), remoteActor.GetSharedInbox(), handle)
 			if err != nil {
-				log.Error("Can't insert remote user in database", err)
+				log.Error("Couldn't insert remote user: %v", err)
 				return "", err
 			}
 		}
