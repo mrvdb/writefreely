@@ -68,6 +68,7 @@ type writestore interface {
 	GetTemporaryAccessToken(userID int64, validSecs int) (string, error)
 	GetTemporaryOneTimeAccessToken(userID int64, validSecs int, oneTime bool) (string, error)
 	DeleteAccount(userID int64) error
+	SilenceAccount(userID int64) error
 	ChangeSettings(app *App, u *User, s *userSettings) error
 	ChangePassphrase(userID int64, sudo bool, curPass string, hashedPass []byte) error
 
@@ -791,10 +792,10 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	c := &Collection{}
 
 	// FIXME: change Collection to reflect database values. Add helper functions to get actual values
-	var styleSheet, script, format zero.String
-	row := db.QueryRow("SELECT id, alias, title, description, style_sheet, script, format, owner_id, privacy, view_count FROM collections WHERE "+condition, value)
+	var styleSheet, script, signature, format zero.String
+	row := db.QueryRow("SELECT id, alias, title, description, style_sheet, script, post_signature, format, owner_id, privacy, view_count FROM collections WHERE "+condition, value)
 
-	err := row.Scan(&c.ID, &c.Alias, &c.Title, &c.Description, &styleSheet, &script, &format, &c.OwnerID, &c.Visibility, &c.Views)
+	err := row.Scan(&c.ID, &c.Alias, &c.Title, &c.Description, &styleSheet, &script, &signature, &format, &c.OwnerID, &c.Visibility, &c.Views)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil, impart.HTTPError{http.StatusNotFound, "Collection doesn't exist."}
@@ -806,6 +807,7 @@ func (db *datastore) GetCollectionBy(condition string, value interface{}) (*Coll
 	}
 	c.StyleSheet = styleSheet.String
 	c.Script = script.String
+	c.Signature = signature.String
 	c.Format = format.String
 	c.Public = c.IsPublic()
 
@@ -849,7 +851,8 @@ func (db *datastore) UpdateCollection(c *SubmittedCollection, alias string) erro
 		SetStringPtr(c.Title, "title").
 		SetStringPtr(c.Description, "description").
 		SetNullString(c.StyleSheet, "style_sheet").
-		SetNullString(c.Script, "script")
+		SetNullString(c.Script, "script").
+		SetNullString(c.Signature, "post_signature")
 
 	if c.Format != nil {
 		cf := &CollectionFormat{Format: c.Format.String}
@@ -1150,6 +1153,7 @@ func (db *datastore) GetPosts(cfg *config.Config, c *Collection, page int, inclu
 			break
 		}
 		p.extractData()
+		p.augmentContent(c)
 		p.formatContent(cfg, c, includeFuture)
 
 		posts = append(posts, p.processPost())
@@ -1214,6 +1218,7 @@ func (db *datastore) GetPostsTagged(cfg *config.Config, c *Collection, tag strin
 			break
 		}
 		p.extractData()
+		p.augmentContent(c)
 		p.formatContent(cfg, c, includeFuture)
 
 		posts = append(posts, p.processPost())
@@ -1590,6 +1595,7 @@ func (db *datastore) GetPinnedPosts(coll *CollectionObj, includeFuture bool) (*[
 			break
 		}
 		p.extractData()
+		p.augmentContent(&coll.Collection)
 
 		pp := p.processPost()
 		pp.Collection = coll
@@ -2321,6 +2327,33 @@ func (db *datastore) DeleteAccount(userID int64) error {
 
 	// TODO: federate delete actor
 
+	return nil
+}
+
+func (db *datastore) SilenceAccount(userID int64) error {
+	// Start transaction
+	t, err := db.Begin()
+	if err != nil {
+		log.Error("Unable to begin: %v", err)
+		return err
+	}
+
+	// Update user state
+	_, err = t.Exec("UPDATE users SET state=1 WHERE id=?", userID)
+        if err != nil {
+		t.Rollback()
+		return fmt.Errorf("Unable to update user state: %s", err)
+	}
+
+	// Commit all changes to the database
+	err = t.Commit()
+	if err != nil {
+		t.Rollback()
+		log.Error("Unable to commit: %v", err)
+		return err
+	}
+
+	// TODO: federate delete actor here too?
 	return nil
 }
 
