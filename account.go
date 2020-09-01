@@ -49,6 +49,7 @@ type (
 		Separator template.HTML
 		IsAdmin   bool
 		CanInvite bool
+		CollAlias string
 	}
 )
 
@@ -304,32 +305,18 @@ func viewLogin(app *App, w http.ResponseWriter, r *http.Request) error {
 
 	p := &struct {
 		page.StaticPage
-		To                      string
-		Message                 template.HTML
-		Flashes                 []template.HTML
-		LoginUsername           string
-		OauthSlack              bool
-		OauthWriteAs            bool
-		OauthGitlab             bool
-		GitlabDisplayName       string
-		OauthGeneric            bool
-		OauthGenericDisplayName string
-		OauthGitea              bool
-		GiteaDisplayName        string
+		*OAuthButtons
+		To            string
+		Message       template.HTML
+		Flashes       []template.HTML
+		LoginUsername string
 	}{
-		pageForReq(app, r),
-		r.FormValue("to"),
-		template.HTML(""),
-		[]template.HTML{},
-		getTempInfo(app, "login-user", r, w),
-		app.Config().SlackOauth.ClientID != "",
-		app.Config().WriteAsOauth.ClientID != "",
-		app.Config().GitlabOauth.ClientID != "",
-		config.OrDefaultString(app.Config().GenericOauth.DisplayName, genericOauthDisplayName),
-		app.Config().GenericOauth.ClientID != "",
-		config.OrDefaultString(app.Config().GitlabOauth.DisplayName, gitlabDisplayName),
-		app.Config().GiteaOauth.ClientID != "",
-		config.OrDefaultString(app.Config().GiteaOauth.DisplayName, giteaDisplayName),
+		StaticPage:    pageForReq(app, r),
+		OAuthButtons:  NewOAuthButtons(app.Config()),
+		To:            r.FormValue("to"),
+		Message:       template.HTML(""),
+		Flashes:       []template.HTML{},
+		LoginUsername: getTempInfo(app, "login-user", r, w),
 	}
 
 	if earlyError != "" {
@@ -854,6 +841,7 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 		Collection: c,
 		Silenced:   silenced,
 	}
+	obj.UserPage.CollAlias = c.Alias
 
 	showUserPage(w, "collection", obj)
 	return nil
@@ -1033,6 +1021,7 @@ func viewStats(app *App, u *User, w http.ResponseWriter, r *http.Request) error 
 		TopPosts:   topPosts,
 		Silenced:   silenced,
 	}
+	obj.UserPage.CollAlias = c.Alias
 	if app.cfg.App.Federation {
 		folls, err := app.db.GetAPFollowers(c)
 		if err != nil {
