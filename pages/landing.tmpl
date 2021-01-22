@@ -108,8 +108,13 @@ form dd {
 		</div>
 		{{end}}
 		{{ else }}
+                  {{ if .UserInvites }}
+                    <p style="font-size: 1.3em; margin: 1rem 0;">Registration is by invitation.</p>
+		    <p>Contact us, or an existing user, to get an invite link.</p>
+		{{ else }}
 		<p style="font-size: 1.3em; margin: 1rem 0;">Registration is currently closed.</p>
 		<p>You can always sign up on <a href="https://writefreely.org/instances">another instance</a>.</p>
+		{{ end }}
 		{{ end }}
 	</div>
 </div>
