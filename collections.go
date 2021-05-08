@@ -33,6 +33,7 @@ import (
 	"github.com/writefreely/writefreely/author"
 	"github.com/writefreely/writefreely/config"
 	"github.com/writefreely/writefreely/page"
+	"golang.org/x/net/idna"
 )
 
 type (
@@ -56,7 +57,7 @@ type (
 		PublicOwner bool           `datastore:"public_owner" json:"-"`
 		URL         string         `json:"url,omitempty"`
 
-		MonetizationPointer string `json:"monetization_pointer,omitempty"`
+		Monetization string `json:"monetization_pointer,omitempty"`
 
 		db       *datastore
 		hostName string
@@ -236,7 +237,9 @@ func (c *Collection) DisplayCanonicalURL() string {
 	if p == "/" {
 		p = ""
 	}
-	return u.Hostname() + p
+	d := u.Hostname()
+	d, _ = idna.ToUnicode(d)
+	return d + p
 }
 
 func (c *Collection) RedirectingCanonicalURL(isRedir bool) string {

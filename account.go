@@ -16,10 +16,12 @@ import (
 	"html/template"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/csrf"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
 	"github.com/guregu/null/zero"
@@ -690,6 +692,22 @@ func viewMyPostsAPI(app *App, u *User, w http.ResponseWriter, r *http.Request) e
 		return ErrBadRequestedType
 	}
 
+	isAnonPosts := r.FormValue("anonymous") == "1"
+	if isAnonPosts {
+		pageStr := r.FormValue("page")
+		pg, err := strconv.Atoi(pageStr)
+		if err != nil {
+			log.Error("Error parsing page parameter '%s': %s", pageStr, err)
+			pg = 1
+		}
+
+		p, err := app.db.GetAnonymousPosts(u, pg)
+		if err != nil {
+			return err
+		}
+		return impart.WriteSuccess(w, p, http.StatusOK)
+	}
+
 	var err error
 	p := GetPostsCache(u.ID)
 	if p == nil {
@@ -730,7 +748,7 @@ func viewMyCollectionsAPI(app *App, u *User, w http.ResponseWriter, r *http.Requ
 }
 
 func viewArticles(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
-	p, err := app.db.GetAnonymousPosts(u)
+	p, err := app.db.GetAnonymousPosts(u, 1)
 	if err != nil {
 		log.Error("unable to fetch anon posts: %v", err)
 	}
@@ -821,7 +839,7 @@ func viewEditCollection(app *App, u *User, w http.ResponseWriter, r *http.Reques
 	}
 
 	// Add collection properties
-	c.MonetizationPointer = app.db.GetCollectionAttribute(c.ID, "monetization_pointer")
+	c.Monetization = app.db.GetCollectionAttribute(c.ID, "monetization_pointer")
 
 	silenced, err := app.db.IsUserSilenced(u.ID)
 	if err != nil {
@@ -1082,6 +1100,7 @@ func viewSettings(app *App, u *User, w http.ResponseWriter, r *http.Request) err
 		HasPass                 bool
 		IsLogOut                bool
 		Silenced                bool
+		CSRFField               template.HTML
 		OauthSection            bool
 		OauthAccounts           []oauthAccountInfo
 		OauthSlack              bool
@@ -1098,6 +1117,7 @@ func viewSettings(app *App, u *User, w http.ResponseWriter, r *http.Request) err
 		HasPass:                 passIsSet,
 		IsLogOut:                r.FormValue("logout") == "1",
 		Silenced:                fullUser.IsSilenced(),
+		CSRFField:               csrf.TemplateField(r),
 		OauthSection:            displayOauthSection,
 		OauthAccounts:           oauthAccounts,
 		OauthSlack:              enableOauthSlack,
@@ -1152,6 +1172,32 @@ func getTempInfo(app *App, key string, r *http.Request, w http.ResponseWriter) s
 	return s
 }
 
+func handleUserDelete(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
+	if !app.cfg.App.OpenDeletion {
+		return impart.HTTPError{http.StatusForbidden, "Open account deletion is disabled on this instance."}
+	}
+
+	confirmUsername := r.PostFormValue("confirm-username")
+	if u.Username != confirmUsername {
+		return impart.HTTPError{http.StatusBadRequest, "Confirmation username must match your username exactly."}
+	}
+
+	// Check for account deletion safeguards in place
+	if u.IsAdmin() {
+		return impart.HTTPError{http.StatusForbidden, "Cannot delete admin."}
+	}
+
+	err := app.db.DeleteAccount(u.ID)
+	if err != nil {
+		log.Error("user delete account: %v", err)
+		return impart.HTTPError{http.StatusInternalServerError, fmt.Sprintf("Could not delete account: %v", err)}
+	}
+
+	// FIXME: This doesn't ever appear to the user, as (I believe) the value is erased when the session cookie is reset
+	_ = addSessionFlash(app, w, r, "Thanks for writing with us! You account was deleted successfully.", nil)
+	return impart.HTTPError{http.StatusFound, "/me/logout"}
+}
+
 func removeOauth(app *App, u *User, w http.ResponseWriter, r *http.Request) error {
 	provider := r.FormValue("provider")
 	clientID := r.FormValue("client_id")
@@ -1173,6 +1219,7 @@ func prepareUserEmail(input string, emailKey []byte) zero.String {
 			log.Error("Unable to encrypt email: %s\n", err)
 		} else {
 			email.String = string(encEmail)
+
 		}
 	}
 	return email
