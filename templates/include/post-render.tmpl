@@ -70,7 +70,7 @@
         // Support the aliases specified above
         // and make sure the block has the non-aliased name
         if (aliasmap[lang]) lang = aliasmap[lang];
-        block.className = 'language-' + lang;
+        lb[i].className = 'language-' + lang;
         lurl = hlbaseUri + "highlightjs/" + lang + ".min.js";
         if (!jss.includes(lurl)) {
           jss.push(lurl);
