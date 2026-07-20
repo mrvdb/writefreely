@@ -10,3 +10,7 @@ tmp
 *.db
 
 bindata.go
+
+/writefreely
+/writefreely-amd64
+.log/
